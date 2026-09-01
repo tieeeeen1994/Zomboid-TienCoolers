@@ -1,0 +1,8 @@
+name=Cooler Fridge
+id=CoolerFridge
+description=Pack a cooler with ice and it keeps food fresh wherever you carry it. Adds a Bag of Ice item you can loot from store freezers or freeze yourself from water.
+author=Jenek
+modversion=1.0.0
+poster=poster.png
+icon=icon.png
+category=Items

@@ -1,0 +1,30 @@
+{
+    "Sandbox_CoolerFridge": "COOLER FRIDGE",
+
+    "Sandbox_CoolerFridge_CoolFactor": "Cooling Strength",
+    "Sandbox_CoolerFridge_CoolFactor_tooltip": "Rot rate for food in an iced cooler, as a fraction of normal. 0.25 means food keeps four times as long. 0 stops rot entirely.",
+
+    "Sandbox_CoolerFridge_IceLifeHours": "Ice Lifetime (hours)",
+    "Sandbox_CoolerFridge_IceLifeHours_tooltip": "In-game hours one full bag of ice lasts inside a cooler at 20 C. Hot weather burns through it faster, cold weather slower.",
+
+    "Sandbox_CoolerFridge_IceLifeOutsideMult": "Ice Lifetime Outside a Cooler",
+    "Sandbox_CoolerFridge_IceLifeOutsideMult_tooltip": "Multiplier applied to ice lifetime when the ice is not in a cooler. 0.2 means it melts five times faster in a backpack.",
+
+    "Sandbox_CoolerFridge_FreezeHours": "Freezing Time (hours)",
+    "Sandbox_CoolerFridge_FreezeHours_tooltip": "In-game hours a powered freezer needs to turn water into ice, and to refill a melted bag of ice.",
+
+    "Sandbox_CoolerFridge_WaterPerBag": "Water Per Bag of Ice",
+    "Sandbox_CoolerFridge_WaterPerBag_tooltip": "Units of water consumed per bag of ice produced.",
+
+    "Sandbox_CoolerFridge_UseColdpacks": "Cold Packs Work as Ice",
+    "Sandbox_CoolerFridge_UseColdpacks_tooltip": "Lets the vanilla Cold Pack chill a cooler too, at 40% the strength of a bag of ice.",
+
+    "Sandbox_CoolerFridge_SpawnIceInLoot": "Spawn Ice in Freezers",
+    "Sandbox_CoolerFridge_SpawnIceInLoot_tooltip": "Adds bags of ice to freezer loot. Turn off to make freezing your own water the only source.",
+
+    "Sandbox_CoolerFridge_ShowColdTint": "Blue Tint on Chilled Items",
+    "Sandbox_CoolerFridge_ShowColdTint_tooltip": "Chills the items in an iced cooler so the inventory window tints their rows blue, the same cue a powered fridge gives. Turn off to leave item temperature alone.",
+
+    "Sandbox_CoolerFridge_RenameCoolers": "Label Iced Coolers",
+    "Sandbox_CoolerFridge_RenameCoolers_tooltip": "Adds (Iced) to the name of a cooler that currently holds ice."
+}

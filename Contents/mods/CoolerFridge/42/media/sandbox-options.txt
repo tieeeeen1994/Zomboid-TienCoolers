@@ -1,0 +1,83 @@
+VERSION = 1,
+
+option CoolerFridge.CoolFactor
+{
+    type = double,
+    min = 0.0,
+    max = 1.0,
+    default = 0.25,
+    page = CoolerFridge,
+    translation = CoolerFridge_CoolFactor,
+}
+
+option CoolerFridge.IceLifeHours
+{
+    type = double,
+    min = 1.0,
+    max = 1000.0,
+    default = 48.0,
+    page = CoolerFridge,
+    translation = CoolerFridge_IceLifeHours,
+}
+
+option CoolerFridge.IceLifeOutsideMult
+{
+    type = double,
+    min = 0.01,
+    max = 1.0,
+    default = 0.2,
+    page = CoolerFridge,
+    translation = CoolerFridge_IceLifeOutsideMult,
+}
+
+option CoolerFridge.FreezeHours
+{
+    type = double,
+    min = 0.25,
+    max = 72.0,
+    default = 6.0,
+    page = CoolerFridge,
+    translation = CoolerFridge_FreezeHours,
+}
+
+option CoolerFridge.WaterPerBag
+{
+    type = double,
+    min = 0.1,
+    max = 10.0,
+    default = 1.0,
+    page = CoolerFridge,
+    translation = CoolerFridge_WaterPerBag,
+}
+
+option CoolerFridge.UseColdpacks
+{
+    type = boolean,
+    default = true,
+    page = CoolerFridge,
+    translation = CoolerFridge_UseColdpacks,
+}
+
+option CoolerFridge.SpawnIceInLoot
+{
+    type = boolean,
+    default = true,
+    page = CoolerFridge,
+    translation = CoolerFridge_SpawnIceInLoot,
+}
+
+option CoolerFridge.ShowColdTint
+{
+    type = boolean,
+    default = true,
+    page = CoolerFridge,
+    translation = CoolerFridge_ShowColdTint,
+}
+
+option CoolerFridge.RenameCoolers
+{
+    type = boolean,
+    default = true,
+    page = CoolerFridge,
+    translation = CoolerFridge_RenameCoolers,
+}

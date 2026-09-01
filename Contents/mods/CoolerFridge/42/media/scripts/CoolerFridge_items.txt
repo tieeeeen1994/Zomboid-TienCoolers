@@ -1,0 +1,26 @@
+module CoolerFridge
+{
+    imports
+    {
+        Base
+    }
+
+    model CFIceBag_Ground
+    {
+        mesh = WorldItems/Clothing/PlasticBag_Ground,
+        texture = WorldItems/CFIceBag,
+        scale = 0.4,
+    }
+
+    item IceBag
+    {
+        DisplayCategory = Camping,
+        ItemType = base:drainable,
+        Weight = 1.6,
+        UseDelta = 0.02,
+        UseWhileEquipped = false,
+        Icon = CFIceBag,
+        WorldStaticModel = CFIceBag_Ground,
+        Tooltip = Tooltip_CFIceBag,
+    }
+}
