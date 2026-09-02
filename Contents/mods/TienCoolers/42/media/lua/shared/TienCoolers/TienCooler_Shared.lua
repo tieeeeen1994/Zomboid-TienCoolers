@@ -247,11 +247,7 @@ function CF.addressContainer(inventory)
         -- hang off, so it is named by the square it lies on and the item's id. Bags
         -- held by a player fall through here and are left alone, as does the loot
         -- window's floor list, which has no containing item at all.
-        local item = inventory:getContainingItem()
-        if not (item and item:hasWorldItem()) then return nil end
-        local ground = item:getSquare()
-        if not ground then return nil end
-        return { x = ground:getX(), y = ground:getY(), z = ground:getZ(), g = item:getID() }
+        return CF.addressGroundItem(inventory:getContainingItem())
     end
 
     local square = parent:getSquare()
@@ -271,7 +267,10 @@ end
 -- a jug of water set down outside is named.
 function CF.addressGroundItem(item)
     if not (item and item:hasWorldItem()) then return nil end
-    local ground = item:getSquare()
+    -- Not item:getSquare(): that one answers with the square of the character holding
+    -- the item, so it is nil for exactly the case this function exists for. The world
+    -- object an item on the ground is drawn as is the thing that knows where it lies.
+    local ground = item:getWorldItem():getSquare()
     if not ground then return nil end
     return { x = ground:getX(), y = ground:getY(), z = ground:getZ(), g = item:getID() }
 end
@@ -483,22 +482,30 @@ local function coolerId(coolerItem)
 end
 
 function CF.updateCoolerName(coolerItem, iced)
-    local md = coolerItem:getModData()
-    -- Switching the option off has to fall through to the cleanup branch, otherwise a
-    -- cooler that is already labelled keeps its suffix for the rest of the save.
+    -- Switching the option off has to fall through to the unlabelling branch, otherwise
+    -- a cooler that is already labelled keeps its suffix for the rest of the save.
     if not CF.opt("RenameCoolers", true) then
         iced = false
     end
-    if iced then
-        if md.tcNamed then return end
-        md.tcBaseName = coolerItem:getName()
-        coolerItem:setName(md.tcBaseName .. " " .. getText("IGUI_TienCoolers_Iced"))
-        md.tcNamed = true
-        CF.syncFields(coolerItem)
-    elseif md.tcNamed then
-        if md.tcBaseName then coolerItem:setName(md.tcBaseName) end
-        md.tcNamed = nil
-        md.tcBaseName = nil
+
+    local md = coolerItem:getModData()
+    local suffix = " " .. getText("IGUI_TienCoolers_Iced")
+    local name = coolerItem:getName()
+
+    -- The name on the item decides, not the flag in its modData. modData travels with
+    -- an item across the wire and the custom name does not always follow, so a copy can
+    -- arrive claiming to be labelled while reading "Cooler"; trusting the flag would
+    -- leave it that way for good. Reading the name back also keeps a cooler the player
+    -- has renamed themselves intact.
+    local labelled = #name > #suffix and string.sub(name, -#suffix) == suffix
+    local base = labelled and string.sub(name, 1, #name - #suffix) or md.tcBaseName or name
+    local wanted = iced and (base .. suffix) or base
+
+    md.tcNamed = iced or nil
+    md.tcBaseName = iced and base or nil
+
+    if name ~= wanted then
+        coolerItem:setName(wanted)
         CF.syncFields(coolerItem)
     end
 end

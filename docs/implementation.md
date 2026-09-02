@@ -176,7 +176,7 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 `scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
 files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
 behaviour along with container ownership, addressing, what goes on the wire and the
-client-to-server round trip, 56 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+client-to-server round trip, 59 checks in all. Run it from `scripts/` with any Lua 5.4 host,
 or with `lupa` from Python:
 
 ```

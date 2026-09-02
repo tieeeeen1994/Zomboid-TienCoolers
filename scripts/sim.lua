@@ -131,7 +131,7 @@ function dropOnGround(item, x, y, z)
     newWorldContainer(x, y, z, "bag", false)          -- makes sure the square exists
     local square = net.squares[x .. "," .. y .. "," .. z]
     table.insert(square.dropped, { getItem = function() return item end })
-    item.square = square
+    item.worldItem = { getSquare = function() return square end }
     item.container = nil
     return item
 end
@@ -205,8 +205,12 @@ function Item:syncItemFields() net.log("fields:%s", self.fullType) end
 function Item:getName() return self.name or self.fullType end
 function Item:setName(v) self.name = v end
 function Item:getFluidContainer() return self.fluid end
-function Item:hasWorldItem() return self.square ~= nil end
-function Item:getSquare() return self.square end
+function Item:hasWorldItem() return self.worldItem ~= nil end
+function Item:getWorldItem() return self.worldItem end
+-- Mirrors the real one, which answers with the square of the character holding the
+-- item: nil for anything lying on the ground. Where a dropped item lies is known only
+-- to its world object, and stubbing that faithfully is the point.
+function Item:getSquare() return self.holder and self.holder:getSquare() or nil end
 function Item:getHeat() return self.heat end
 function Item:setHeat(v) self.heat = v end
 
@@ -574,6 +578,31 @@ handlers.OnClientCommand("TienCoolers", "tick", me, looseAddress)
 clock.hours = 5
 handlers.OnClientCommand("TienCoolers", "tick", me, looseAddress)
 passed = report("loose ice on the ground melts at the outside rate", loose.delta, 1 - 5 / 9.6) and passed
+
+-- modData crosses the wire but a custom name does not always follow, so a copy can
+-- arrive claiming to be labelled while still reading "Cooler". It has to label itself
+-- anyway rather than trust the flag and stay that way for good.
+clock.hours = 0
+local stuck = newBag("Base.Cooler")
+stuck:getModData().tcNamed = true
+stuck:getModData().tcBaseName = "Base.Cooler"
+stuck.inventory:AddItem("TienCoolers.IceBag")
+me.inventory:add(stuck)
+CF.processTopLevel(me:getInventory())
+passed = reportStr("a cooler that only thinks it is labelled gets its label",
+    stuck:getName(), "Base.Cooler " .. ICED) and passed
+
+-- And one the player renamed themselves keeps that name when the ice runs out.
+local ownName = newBag("Base.Cooler")
+ownName:setName("Beer Stash")
+local ownIce = ownName.inventory:AddItem("TienCoolers.IceBag")
+me.inventory:add(ownName)
+CF.processTopLevel(me:getInventory())
+passed = reportStr("a renamed cooler keeps its own name", ownName:getName(), "Beer Stash " .. ICED) and passed
+ownIce.delta = 0.0
+clock.hours = 1
+CF.processTopLevel(me:getInventory())
+passed = reportStr("  and gets it back when the ice is gone", ownName:getName(), "Beer Stash") and passed
 
 net.packets = {}
 handlers.OnClientCommand("SomeOtherMod", "tick", me, request)
