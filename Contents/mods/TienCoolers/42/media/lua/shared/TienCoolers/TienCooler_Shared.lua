@@ -111,7 +111,8 @@ end
 -- (a Coldpack, say) carries its charge in modData.
 function CF.getCharge(item)
     if instanceof(item, "DrainableComboItem") then
-        return item:getUsedDelta()
+        -- B42 dropped getUsedDelta(); getCurrentUsesFloat() is the same 0..1 fraction.
+        return item:getCurrentUsesFloat()
     end
     local md = item:getModData()
     if md.tcCharge == nil then md.tcCharge = 1.0 end
@@ -123,8 +124,10 @@ function CF.setCharge(item, value)
     if value > 1 then value = 1 end
     if instanceof(item, "DrainableComboItem") then
         item:setUsedDelta(value)
+        CF.syncCharge(item)
     else
         item:getModData().tcCharge = value
+        CF.syncModData(item)
     end
     return value
 end
@@ -132,7 +135,7 @@ end
 function CF.destroyIce(item)
     local container = item:getContainer()
     if container then
-        container:Remove(item)
+        CF.removeItem(container, item)
     end
 end
 
@@ -154,6 +157,165 @@ local function containerIsCold(inventory)
     return inventory:isPowered()
 end
 CF.containerIsCold = containerIsCold
+
+--[[ Multiplayer ]]
+
+-- Every machine loads this file, so the mod has to agree on who may write to what.
+-- Singleplayer and a co-op host are the authority for everything they can see. A
+-- remote client is the authority only for what its own player carries: world
+-- containers belong to the server, which is asked to tick them instead (see
+-- TienCooler_Server.lua). Nothing below needs an isClient() guard - the vanilla
+-- send*/sync* helpers are no-ops offline, which is how vanilla itself calls them.
+
+-- Set by the server while it acts on a client's request, so the helpers below know
+-- which connection to answer. nil everywhere else.
+CF.syncPlayer = nil
+
+local function syncingPlayer()
+    return CF.syncPlayer or getSpecificPlayer(0)
+end
+
+-- A drainable's remaining charge rides along with the item's stats.
+function CF.syncCharge(item)
+    sendItemStats(item)
+end
+
+-- Item modData does not travel on its own; a Coldpack keeps its charge there.
+function CF.syncModData(item)
+    local player = syncingPlayer()
+    if player then syncItemModData(player, item) end
+end
+
+-- Custom names (the "(Iced)" suffix) live in the item's fields.
+function CF.syncFields(item)
+    local player = syncingPlayer()
+    if player then
+        syncItemFields(player, item)
+    else
+        item:syncItemFields()
+    end
+end
+
+function CF.addItem(container, fullType)
+    local item = container:AddItem(fullType)
+    if item then sendAddItemToContainer(container, item) end
+    return item
+end
+
+function CF.removeItem(container, item)
+    container:Remove(item)
+    sendRemoveItemFromContainer(container, item)
+end
+
+-- A cooler inside a backpack inside your inventory resolves to your inventory.
+local function outermostContainer(inventory)
+    for _ = 1, MAX_NESTING + 1 do
+        local item = inventory:getContainingItem()
+        if not item then break end
+        local parent = item:getContainer()
+        if not parent then break end
+        inventory = parent
+    end
+    return inventory
+end
+
+-- True when this machine is the one whose writes to `inventory` will be kept.
+function CF.ownsContainer(inventory)
+    if not inventory then return false end
+    if not isClient() then return true end
+    local parent = outermostContainer(inventory):getParent()
+    if not parent then return false end
+    return instanceof(parent, "IsoPlayer") == true and parent:isLocalPlayer() == true
+end
+
+-- Item containers cannot travel over the wire, but "the third container of the second
+-- object at x,y,z" can. Returns nil for a container the server cannot look up again,
+-- which includes the loot window's floor list (a UI-only container).
+function CF.addressContainer(inventory)
+    if not inventory then return nil end
+
+    local part = inventory:getVehiclePart()
+    if part then
+        local vehicle = inventory:getVehicle()
+        if not vehicle then return nil end
+        return { v = vehicle:getId(), p = part:getId() }
+    end
+
+    local parent = inventory:getParent()
+    if not parent then
+        -- A cooler set down on the ground is its own world object: no parent object to
+        -- hang off, so it is named by the square it lies on and the item's id. Bags
+        -- held by a player fall through here and are left alone, as does the loot
+        -- window's floor list, which has no containing item at all.
+        local item = inventory:getContainingItem()
+        if not (item and item:hasWorldItem()) then return nil end
+        local ground = item:getSquare()
+        if not ground then return nil end
+        return { x = ground:getX(), y = ground:getY(), z = ground:getZ(), g = item:getID() }
+    end
+
+    local square = parent:getSquare()
+    if not square then return nil end
+
+    local objects = square:getObjects()
+    for i = 0, objects:size() - 1 do
+        if objects:get(i) == parent then
+            return { x = square:getX(), y = square:getY(), z = square:getZ(),
+                     o = i, c = parent:getContainerIndex(inventory) }
+        end
+    end
+    return nil
+end
+
+-- The same for a single item lying on the ground, which is how a loose bag of ice or
+-- a jug of water set down outside is named.
+function CF.addressGroundItem(item)
+    if not (item and item:hasWorldItem()) then return nil end
+    local ground = item:getSquare()
+    if not ground then return nil end
+    return { x = ground:getX(), y = ground:getY(), z = ground:getZ(), g = item:getID() }
+end
+
+function CF.resolveGroundItem(address)
+    if type(address) ~= "table" or not address.g then return nil end
+    local square = getSquare(address.x, address.y, address.z)
+    if not square then return nil end
+
+    local dropped = square:getWorldObjects()
+    for i = 0, dropped:size() - 1 do
+        local item = dropped:get(i):getItem()
+        if item and item:getID() == address.g then return item end
+    end
+    return nil
+end
+
+-- The other half of addressContainer, run on the server against its own world.
+function CF.resolveContainer(address)
+    if type(address) ~= "table" then return nil end
+
+    if address.v then
+        local vehicle = getVehicleById(address.v)
+        if not vehicle then return nil end
+        local part = vehicle:getPartById(address.p)
+        return part and part:getItemContainer() or nil
+    end
+
+    if not (address.x and address.y and address.z) then return nil end
+    local square = getSquare(address.x, address.y, address.z)
+    if not square then return nil end
+
+    if address.g then
+        local item = CF.resolveGroundItem(address)
+        if item and item:IsInventoryContainer() then return item:getInventory() end
+        return nil
+    end
+
+    if not (address.o and address.c) then return nil end
+    local objects = square:getObjects()
+    local index = math.floor(address.o)
+    if index < 0 or index >= objects:size() then return nil end
+    return objects:get(index):getContainerByIndex(math.floor(address.c))
+end
 
 --[[ Food ageing ]]
 
@@ -302,7 +464,7 @@ function CF.tickFreezing(item, isCold)
 
     fc:removeFluid(bags * perBag)
     for _ = 1, bags do
-        local bag = container:AddItem(CF.ICE_BAG)
+        local bag = CF.addItem(container, CF.ICE_BAG)
         if bag then
             CF.setCharge(bag, 1.0)
             bag:getModData().tcLast = now
@@ -332,10 +494,12 @@ function CF.updateCoolerName(coolerItem, iced)
         md.tcBaseName = coolerItem:getName()
         coolerItem:setName(md.tcBaseName .. " " .. getText("IGUI_TienCoolers_Iced"))
         md.tcNamed = true
+        CF.syncFields(coolerItem)
     elseif md.tcNamed then
         if md.tcBaseName then coolerItem:setName(md.tcBaseName) end
         md.tcNamed = nil
         md.tcBaseName = nil
+        CF.syncFields(coolerItem)
     end
 end
 
@@ -432,15 +596,26 @@ function CF.processContainer(inventory, isCold, depth)
     end
 
     for _, item in ipairs(contents) do
-        if CF.isCoolerBag(item) then
-            CF.processCooler(item, isCold)
-        elseif CF.icePower(item) then
-            CF.tickIce(item, isCold)
-        else
-            CF.tickFreezing(item, isCold)
+        CF.processItem(item, isCold, depth)
+    end
+end
+
+-- One item's worth of work. A cooler has to go through processCooler rather than have
+-- its contents walked, or the ice inside it melts at the out-in-the-open rate and the
+-- food inside it never gets its rot rebated.
+function CF.processItem(item, isCold, depth)
+    if CF.isCoolerBag(item) then
+        CF.processCooler(item, isCold)
+    elseif CF.icePower(item) then
+        CF.tickIce(item, isCold)
+    else
+        CF.tickFreezing(item, isCold)
+        -- getInventory() only exists on InventoryContainer; asking a plain item
+        -- (an equipped belt, say) for one is an error, not a nil.
+        if item:IsInventoryContainer() then
             local nested = item:getInventory()
             if nested then
-                CF.processContainer(nested, isCold or containerIsCold(nested), depth + 1)
+                CF.processContainer(nested, isCold or containerIsCold(nested), (depth or 0) + 1)
             end
         end
     end
@@ -449,4 +624,18 @@ end
 function CF.processTopLevel(inventory)
     if not inventory then return end
     CF.processContainer(inventory, containerIsCold(inventory), 0)
+end
+
+-- Run a pass on whatever a client's address names. Nothing on the ground is ever cold:
+-- a powered fridge is an object, not a dropped item.
+function CF.processAddress(address)
+    if type(address) ~= "table" then return end
+
+    if address.g then
+        local item = CF.resolveGroundItem(address)
+        if item then CF.processItem(item, false, 0) end
+        return
+    end
+
+    CF.processTopLevel(CF.resolveContainer(address))
 end

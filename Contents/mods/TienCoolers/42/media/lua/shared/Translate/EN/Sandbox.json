@@ -1,5 +1,5 @@
 {
-    "Sandbox_TienCoolers": "TIEN'S COOLERS",
+    "Sandbox_TienCoolers": "Tien's Coolers",
 
     "Sandbox_TienCoolers_CoolFactor": "Cooling Strength",
     "Sandbox_TienCoolers_CoolFactor_tooltip": "Rot rate for food in an iced cooler, as a fraction of normal. 0.25 means food keeps four times as long. 0 stops rot entirely. A cooler is never allowed to beat a powered fridge, so this is floored at whatever Refrigeration Effectiveness gives one.",

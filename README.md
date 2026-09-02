@@ -34,8 +34,10 @@ a cooler is never allowed to preserve food better than a powered refrigerator do
 
 ## Compatibility
 
-Build 42 only. The mod can be added to an existing save. Multiplayer is supported, and a
-dedicated server needs no additional setup beyond having the mod installed.
+Build 42 only. The mod can be added to an existing save. Multiplayer is supported: a cooler
+you are carrying is handled by your own game, and one in a fridge, a car or on the ground by
+the server, so nothing is ever counted twice. A dedicated server needs no additional setup
+beyond having the mod installed.
 
 Other mods can register their own coolers and cold sources. The
 [implementation notes](docs/implementation.md) explain how, along with the rest of the

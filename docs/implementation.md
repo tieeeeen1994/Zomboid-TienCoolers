@@ -91,14 +91,58 @@ Contents/mods/TienCoolers/42/
     textures/WorldItems/TienCoolerIceBag.png   256x256 world model texture
     lua/shared/TienCoolers/                    cooling, melting and freezing logic
     lua/client/TienCoolers/                    event driver + context menu
-    lua/server/TienCoolers/                    freezer loot
+    lua/server/TienCoolers/                    freezer loot + the world-container driver
     lua/shared/Translate/EN/                   ItemName / Tooltip / ContextMenu / IG_UI / Sandbox
 ```
 
-Everything runs client side, on the containers a player is carrying or currently looking at
-(`EveryOneMinute` plus `OnRefreshInventoryWindowContainers`). State lives in item modData and
-in the drainable's used-delta, both of which the client already owns and transmits, so a
-dedicated server needs nothing extra and no correction is ever applied twice.
+The logic itself lives in `shared` and runs on whichever machine owns the container it is
+looking at, driven by `EveryOneMinute` and `OnRefreshInventoryWindowContainers`. State lives
+in item modData and in the drainable's used-delta.
+
+## Multiplayer
+
+Every container has exactly one writer, because only one machine's copy of an item is the
+one that gets saved:
+
+| container | writer |
+| --- | --- |
+| the local player's inventory, and any cooler or bag nested in it | that client |
+| a fridge, a crate, a corpse, a vehicle trunk | the server |
+| a cooler or a bag of ice lying on the ground | the server |
+| anything at all, offline or on a co-op host | that machine |
+
+`CF.ownsContainer` makes the call, and it is true for everything unless `isClient()`, so
+singleplayer takes the same path it always did. When a client meets a container it does not
+own it sends `sendClientCommand("TienCoolers", "tick", address)` instead of writing to it,
+rate limited to one request per container per ten seconds, and `TienCooler_Server.lua` runs
+the same shared code against the server's own copy. Requests are cheap to lose or repeat:
+the pass works from a timestamp on the item, so a second tick in the same minute is a no-op
+and a missed one is made up for by the next.
+
+Containers cannot travel over the wire, so `CF.addressContainer` names one as "the *n*th
+container of the object at x,y,z" (or a vehicle id and part id) and `CF.resolveContainer`
+looks it back up on the other side. Something set down on the ground has no parent object
+to hang off, so `CF.addressGroundItem` names it by its square and item id instead and the
+server finds it again in `square:getWorldObjects()`. The loot window's floor list is built
+client-side and has no address of its own, so a client that meets it walks it and asks for
+the coolers and cold sources lying in it one at a time.
+
+A ground address names an *item*, not a container, which matters: a cooler has to go
+through `CF.processCooler` rather than have its contents walked, or the ice inside it melts
+at the out-in-the-open rate and the food inside it never gets its rot rebated. `CF.processItem`
+is the one item's worth of work that both paths share, and `CF.processAddress` is the single
+entry point the server uses for either kind of address.
+
+Changes are then transmitted with the vanilla helpers, which do nothing offline, which is
+why they are called unguarded: `sendItemStats` for a bag of ice's remaining charge,
+`syncItemModData` for a Cold Pack's (it has no used-delta of its own), `syncItemFields` for
+the *(Iced)* suffix, and `sendAddItemToContainer` / `sendRemoveItemFromContainer` for bags
+of ice that are created or used up. Bookkeeping modData needs no packet: it is only ever
+read by the machine that wrote it, and it travels with the item when the item is moved.
+
+Freezing water is started from a client's context menu but always finishes in a fridge or a
+freezer, so the flag is set locally for the menu's benefit and sent on with a `setFreezing`
+command; the server sets it on its own copy and syncs it back.
 
 ## Extending
 
@@ -129,6 +173,12 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 
 ## Development
 
-`scripts/sim.lua` stubs out the parts of the PZ API the shared module touches and asserts the
-cooling, melting, refreezing, water-to-ice, chill and labelling behaviour, 23 checks in all.
-Run it with any Lua 5.4 host, or with `lupa` from Python.
+`scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
+files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
+behaviour along with container ownership, addressing, what goes on the wire and the
+client-to-server round trip, 56 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+or with `lupa` from Python:
+
+```
+python -c "import lupa,io; lupa.LuaRuntime().execute(io.open('sim.lua').read())"
+```
