@@ -101,23 +101,36 @@ in item modData and in the drainable's used-delta.
 
 ## Multiplayer
 
-Every container has exactly one writer, because only one machine's copy of an item is the
-one that gets saved:
+The model is vanilla's. `Food.updateAge()` is never sent over the wire: every machine
+recomputes it from a `lastAged` timestamp on the item plus state everyone already agrees
+on - world time, whether the container is a powered fridge, the sandbox settings - so all
+copies land on the same number without anyone being authoritative. That is why a vanilla
+fridge needs no synchronisation to work in multiplayer.
 
-| container | writer |
+This mod does the same thing. A pass is `(state, elapsed time)` in, new state out, keyed
+off `tcLast`, so every machine runs it against its own copy of a container and they
+converge. A client ticks **every** container it can see, including ones it does not own,
+and nothing is pushed back - which is what makes a cooler on the floor cool live on the
+screen of whoever is looking at it, and what gives each player the *(Iced)* label in their
+own language. Ticking the same copy twice in one moment is a no-op, so a client and a
+server both ticking never counts the time twice. The sim asserts exactly this: two
+machines, the same elapsed hours, the same resulting ice, rot and name.
+
+Only real transfers need one machine to decide, because two machines each doing one means
+two of the item:
+
+| what | who |
 | --- | --- |
-| the local player's inventory, and any cooler or bag nested in it | that client |
-| a fridge, a crate, a corpse, a vehicle trunk | the server |
-| a cooler or a bag of ice lying on the ground | the server |
-| anything at all, offline or on a co-op host | that machine |
+| cooling, melting, refreezing, rot rebate, the label | every machine, on its own copy |
+| turning water into bags of ice | whoever owns the container (`CF.mayTransfer`) |
+| adding and removing items generally | the owner: your own inventory, else the server |
 
-`CF.ownsContainer` makes the call, and it is true for everything unless `isClient()`, so
-singleplayer takes the same path it always did. When a client meets a container it does not
-own it sends `sendClientCommand("TienCoolers", "tick", address)` instead of writing to it,
-rate limited to one request per container per ten seconds, and `TienCooler_Server.lua` runs
-the same shared code against the server's own copy. Requests are cheap to lose or repeat:
-the pass works from a timestamp on the item, so a second tick in the same minute is a no-op
-and a missed one is made up for by the next.
+A client that sees water finish freezing in a base freezer therefore leaves the flag set
+and makes nothing; the server does it, and the new bag arrives by the ordinary container
+packets. Clients nudge the server every ten seconds per container they do not own
+(`sendClientCommand` -> `CF.processAddress`) so the copy that gets saved keeps up and those
+transfers happen. That nudge is a background correctness job, not what the player is
+watching: if it never arrives, the screen is still right and only the saved state lags.
 
 Containers cannot travel over the wire, so `CF.addressContainer` names one as "the *n*th
 container of the object at x,y,z" (or a vehicle id and part id) and `CF.resolveContainer`
@@ -129,12 +142,34 @@ the coolers and cold sources lying in it one at a time.
 
 A ground address names an *item*, not a container, which matters: a cooler has to go
 through `CF.processCooler` rather than have its contents walked, or the ice inside it melts
-at the out-in-the-open rate and the food inside it never gets its rot rebated. `CF.processItem`
-is the one item's worth of work that both paths share, and `CF.processAddress` is the single
-entry point the server uses for either kind of address.
+at the out-in-the-open rate and the food inside it never gets its rot rebated.
+`CF.processItem` is the one item's worth of work that both paths share, and
+`CF.processAddress` is the single entry point the server uses for either kind of address.
 
-Changes are then transmitted with the vanilla helpers, which do nothing offline, which is
-why they are called unguarded: `sendItemStats` for a bag of ice's remaining charge,
+Two things about dropped items are easy to get wrong, and both cost a round of "it does
+nothing on the ground":
+
+- `InventoryItem.getSquare()` answers with the square of the *character holding the item*,
+  so it is null for exactly the case a ground address exists for. The square has to come
+  from `item:getWorldItem():getSquare()`.
+- Dropping a bag wraps it in an `IsoWorldInventoryObject` whose constructor calls
+  `IsoObject.setContainer`, which makes that object the parent of the bag's container. So a
+  bag on the ground *does* have a parent - it simply is not one of the square's objects, it
+  is one of its world objects. Anything that tests `getParent() == nil` to spot a dropped
+  bag, or looks for that parent in `square:getObjects()`, silently finds nothing.
+
+`CF.processTopLevel` guards the same edge from the other side. The loot window gives a
+cooler on the ground its own container button, so the mod can be handed the inside of a
+cooler directly; it goes back up to the cooler item and processes it as a cooler.
+
+Do not reach for `transmitCompleteItemToClients` to push a dropped item's state. It is an
+*add object* packet, not an update: the client keeps the world object it already had and
+gains a second one beside it, so one cooler shows up as two container buttons and the ghost
+cannot be picked up, because the server only ever had one. Under this model nothing needs
+pushing anyway. A test pins it.
+
+Changes that do need transmitting use the vanilla helpers, which do nothing offline, which
+is why they are called unguarded: `sendItemStats` for a bag of ice's remaining charge,
 `syncItemModData` for a Cold Pack's (it has no used-delta of its own), `syncItemFields` for
 the *(Iced)* suffix, and `sendAddItemToContainer` / `sendRemoveItemFromContainer` for bags
 of ice that are created or used up. Bookkeeping modData needs no packet: it is only ever
@@ -143,6 +178,44 @@ read by the machine that wrote it, and it travels with the item when the item is
 Freezing water is started from a client's context menu but always finishes in a fridge or a
 freezer, so the flag is set locally for the menu's benefit and sent on with a `setFreezing`
 command; the server sets it on its own copy and syncs it back.
+
+Freezing itself is a container-level pass, `CF.processFreezing`, not a per-item one: every
+container marked for freezing in the same fridge pools its water, so three glasses make a
+bag between them where none of them could alone. It has to work that way, because B42
+capacities are small - a Water Bottle holds 1 unit and a bucket 10 - so a per-bottle rule
+at any sensible bag size would leave most containers unable to freeze at all. Water is
+drawn off the emptiest containers first, so the small ones come out empty instead of every
+one keeping a dribble; a container that still holds water afterwards stays marked and its
+clock restarts, so each bag costs the full freezing time.
+
+The *(Iced)* label needs care of its own. It lives in the item's custom name, so whichever
+machine writes it writes it for everyone, and a dedicated server has no translations loaded
+for a modded key - `getText` there hands back `IGUI_TienCoolers_Iced` itself.
+`CF.updateCoolerName` falls back to plain English when the key is missing, works from the
+name on the item rather than a flag in its modData (modData crosses the wire, a custom name
+does not always follow), and recognises a name stamped with the raw key so it can repair it
+instead of labelling it twice.
+
+### Tracing it
+
+`CF.DEBUG` in the shared file turns on a line a minute from each machine, which is what
+to reach for when the mod works in your hands and nowhere else. The client says how many
+containers the loot window offered, how many it owned, how many it handed to the server,
+and - for anything it could not address - the parent, containing item and world item it
+found. The server says what became of every request: which item it ticked, or which id it
+could not find along with every id actually lying on that square, since item ids agreeing
+across the wire is the one assumption a ground address rests on.
+
+### Version handshake
+
+`CF.VERSION` in the shared file is compared at login, as part of the tracing above: with
+`CF.DEBUG` on the client asks once, the server answers, and a mismatch prints to the
+console. With it off nothing is asked and nothing is said - the mod is silent by default. A dedicated server only picks up a new
+Workshop build when it restarts, and half this mod lives on the server, so a stale server
+fails in a way that reads exactly like a mod bug - coolers work in your hands and do
+nothing on the ground or in a fridge. A server on a build older than this handshake has no
+handler for it and never answers, which the client reports too. Keep it in step with
+`modversion` in mod.info.
 
 ## Extending
 
@@ -176,7 +249,7 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 `scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
 files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
 behaviour along with container ownership, addressing, what goes on the wire and the
-client-to-server round trip, 59 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+client-to-server round trip, 91 checks in all. Run it from `scripts/` with any Lua 5.4 host,
 or with `lupa` from Python:
 
 ```

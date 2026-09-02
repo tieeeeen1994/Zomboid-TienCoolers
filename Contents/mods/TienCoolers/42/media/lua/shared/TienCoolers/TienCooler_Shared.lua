@@ -12,6 +12,22 @@
 TienCoolers = TienCoolers or {}
 local CF = TienCoolers
 
+-- Keep in step with modversion in mod.info. The client and the server compare these
+-- at login: a dedicated server only picks up a new Workshop build when it restarts,
+-- and half this mod lives on the server, so a stale one fails in ways that look like
+-- bugs (nothing works on the ground, nothing works in a fridge).
+CF.VERSION = "1.2.0"
+
+-- Prints what the mod is doing with containers it does not own, on both machines, at
+-- most a line a minute. Set true when a server needs tracing.
+CF.DEBUG = false
+
+function CF.debug(fmt, ...)
+    if CF.DEBUG then
+        print("TienCoolers: " .. string.format(fmt, ...))
+    end
+end
+
 CF.ICE_BAG = "TienCoolers.IceBag"
 
 -- fullType -> cooling power, where 1.0 is one full bag of ice.
@@ -160,12 +176,23 @@ CF.containerIsCold = containerIsCold
 
 --[[ Multiplayer ]]
 
--- Every machine loads this file, so the mod has to agree on who may write to what.
--- Singleplayer and a co-op host are the authority for everything they can see. A
--- remote client is the authority only for what its own player carries: world
--- containers belong to the server, which is asked to tick them instead (see
--- TienCooler_Server.lua). Nothing below needs an isClient() guard - the vanilla
--- send*/sync* helpers are no-ops offline, which is how vanilla itself calls them.
+-- The model is vanilla's. Food.updateAge() is never sent over the wire: every machine
+-- recomputes it from a timestamp on the item (lastAged) plus state everyone already
+-- agrees on - world time, whether the container is a powered fridge, the sandbox
+-- settings - so all copies land on the same number without anyone being authoritative.
+-- This mod works the same way. A pass is (state, elapsed time) in, new state out, so
+-- every machine runs it against its own copy of a container and they converge. Nothing
+-- has to be pushed, which is why a cooler on the floor updates live on the screen of
+-- whoever is looking at it.
+--
+-- Only real transfers need one machine to decide, because two machines each doing one
+-- means two of the item: creating bags of ice out of water, in particular. Those are
+-- gated on CF.mayTransfer and otherwise left to the server, which clients nudge (see
+-- CF.processAddress and TienCooler_Server.lua) so its copy - the one that gets saved -
+-- keeps up and the transfers actually happen.
+--
+-- Nothing below needs an isClient() guard: the vanilla send*/sync* helpers are no-ops
+-- offline, which is how vanilla itself calls them.
 
 -- Set by the server while it acts on a client's request, so the helpers below know
 -- which connection to answer. nil everywhere else.
@@ -219,6 +246,12 @@ local function outermostContainer(inventory)
     return inventory
 end
 
+-- True when this machine may add or remove items here. Everyone computes; only the
+-- machine that owns a container is allowed to change what is in it.
+function CF.mayTransfer(inventory)
+    return CF.ownsContainer(inventory)
+end
+
 -- True when this machine is the one whose writes to `inventory` will be kept.
 function CF.ownsContainer(inventory)
     if not inventory then return false end
@@ -241,14 +274,19 @@ function CF.addressContainer(inventory)
         return { v = vehicle:getId(), p = part:getId() }
     end
 
-    local parent = inventory:getParent()
-    if not parent then
-        -- A cooler set down on the ground is its own world object: no parent object to
-        -- hang off, so it is named by the square it lies on and the item's id. Bags
-        -- held by a player fall through here and are left alone, as does the loot
-        -- window's floor list, which has no containing item at all.
-        return CF.addressGroundItem(inventory:getContainingItem())
+    -- Ask this before the parent: dropping a bag wraps it in an IsoWorldInventoryObject
+    -- and calls IsoObject.setContainer, which makes that object the container's parent.
+    -- So a bag on the ground does have a parent, it just is not one of the square's
+    -- objects - it is one of its world objects, named by item id instead. Bags held by
+    -- a player have no world item and fall through, as does the loot window's floor
+    -- list, which has no containing item at all.
+    local held = inventory:getContainingItem()
+    if held and held:hasWorldItem() then
+        return CF.addressGroundItem(held)
     end
+
+    local parent = inventory:getParent()
+    if not parent then return nil end
 
     local square = parent:getSquare()
     if not square then return nil end
@@ -389,7 +427,7 @@ function CF.tickIce(item, isCold)
     local charge = CF.getCharge(item)
 
     if isCold then
-        CF.setCharge(item, charge + dt / CF.opt("FreezeHours", 6.0))
+        CF.setCharge(item, charge + dt / CF.opt("FreezeHours", 7.0))
         return
     end
 
@@ -411,7 +449,9 @@ function CF.canFreezeWater(item)
     local fc = item:getFluidContainer()
     if not fc then return false end
     if not fc:contains(Fluid.Water) then return false end
-    return fc:getAmount() >= CF.opt("WaterPerBag", 1.0)
+    -- Any amount will do: what is marked in one fridge pools, so a glass that could
+    -- never make a bag on its own still counts towards one.
+    return fc:getAmount() > 0
 end
 
 function CF.isFreezingWater(item)
@@ -432,11 +472,13 @@ end
 
 -- Called for every item in a powered fridge/freezer. Water marked for freezing turns
 -- into bags of ice once it has sat there long enough.
+-- Marked water that is no longer in the cold is forgotten, so it cannot be marked in a
+-- freezer, carried around and dropped back in to finish instantly. The making of the
+-- ice itself happens a level up, in processFreezing, because it pools.
 function CF.tickFreezing(item, isCold)
     local md = item:getModData()
     if not md.tcFreezing then return end
 
-    -- Taken back out of the freezer: forget about it.
     if not isCold then
         CF.stopFreezingWater(item)
         return
@@ -445,25 +487,69 @@ function CF.tickFreezing(item, isCold)
     local now = CF.worldHours()
     if md.tcFreezeStart == nil or md.tcFreezeStart > now then
         md.tcFreezeStart = now
-        return
     end
-    if now - md.tcFreezeStart < CF.opt("FreezeHours", 6.0) then return end
+end
 
-    local fc = item:getFluidContainer()
-    local container = item:getContainer()
-    if not fc or not container then
-        CF.stopFreezingWater(item)
-        return
+-- Water freezes by the container, not by the bottle. Everything marked for freezing in
+-- one fridge pools, so three glasses add up to a bag of ice where none of them could
+-- make one alone, and a bucket that holds two bags' worth still gives two.
+function CF.processFreezing(inventory, isCold)
+    local now = CF.worldHours()
+    local wait = CF.opt("FreezeHours", 7.0)
+    local ready, pool = {}, 0.0
+
+    local list = inventory:getItems()
+    for i = 0, list:size() - 1 do
+        local item = list:get(i)
+        local md = item:getModData()
+        if md.tcFreezing then
+            if not isCold then
+                CF.stopFreezingWater(item)
+            else
+                if md.tcFreezeStart == nil or md.tcFreezeStart > now then
+                    md.tcFreezeStart = now
+                end
+                local fluid = item:getFluidContainer()
+                local amount = fluid and fluid:getAmount() or 0
+                if amount > 0 and now - md.tcFreezeStart >= wait then
+                    ready[#ready + 1] = { item = item, fluid = fluid, amount = amount }
+                    pool = pool + amount
+                elseif not fluid then
+                    CF.stopFreezingWater(item)      -- nothing to freeze in there
+                end
+            end
+        end
     end
 
-    local perBag = CF.opt("WaterPerBag", 1.0)
-    local bags = math.floor(fc:getAmount() / perBag)
-    CF.stopFreezingWater(item)
+    local perBag = CF.opt("WaterPerBag", 5.0)
+    local bags = math.floor(pool / perBag)
     if bags < 1 then return end
 
-    fc:removeFluid(bags * perBag)
+    -- Making the ice is a transfer, not a computation: if every machine that can see
+    -- this fridge made bags there would be a bag per machine. Leave it for whoever owns
+    -- the container - on a client that is the server, which a nudge will bring round to
+    -- it - and keep the water marked until then.
+    if not CF.mayTransfer(inventory) then return end
+
+    -- Draw from the emptiest first, so the little containers come out empty rather than
+    -- every one of them being left with a dribble.
+    table.sort(ready, function(a, b) return a.amount < b.amount end)
+
+    local owed = bags * perBag
+    for _, entry in ipairs(ready) do
+        if owed <= 0 then break end
+        local taken = entry.amount < owed and entry.amount or owed
+        entry.fluid:removeFluid(taken)
+        owed = owed - taken
+        if entry.amount - taken <= 0.0001 then
+            CF.stopFreezingWater(entry.item)
+        else
+            entry.item:getModData().tcFreezeStart = now   -- the next bag takes as long
+        end
+    end
+
     for _ = 1, bags do
-        local bag = CF.addItem(container, CF.ICE_BAG)
+        local bag = CF.addItem(inventory, CF.ICE_BAG)
         if bag then
             CF.setCharge(bag, 1.0)
             bag:getModData().tcLast = now
@@ -481,6 +567,27 @@ local function coolerId(coolerItem)
     return md.tcId
 end
 
+local ICED_KEY = "IGUI_TienCoolers_Iced"
+
+-- A dedicated server has no translations loaded for a modded key, and the name it
+-- writes is the one every client then reads, so fall back to plain English rather than
+-- stamping the raw key onto the item. A label written by the server is in the server's
+-- language for everyone: unavoidable, since the label lives in the item's name.
+local function icedSuffix()
+    return " " .. (getTextOrNull(ICED_KEY) or "(Iced)")
+end
+
+-- Names already carrying a label have to be recognised so they can be repaired rather
+-- than labelled twice, including ones stamped with the raw key by an older version.
+local function stripLabel(name)
+    for _, suffix in ipairs({ icedSuffix(), " " .. ICED_KEY }) do
+        if #name > #suffix and string.sub(name, -#suffix) == suffix then
+            return string.sub(name, 1, #name - #suffix)
+        end
+    end
+    return name
+end
+
 function CF.updateCoolerName(coolerItem, iced)
     -- Switching the option off has to fall through to the unlabelling branch, otherwise
     -- a cooler that is already labelled keeps its suffix for the rest of the save.
@@ -488,21 +595,17 @@ function CF.updateCoolerName(coolerItem, iced)
         iced = false
     end
 
-    local md = coolerItem:getModData()
-    local suffix = " " .. getText("IGUI_TienCoolers_Iced")
-    local name = coolerItem:getName()
-
-    -- The name on the item decides, not the flag in its modData. modData travels with
+    -- The name on the item decides, never a flag in its modData: modData travels with
     -- an item across the wire and the custom name does not always follow, so a copy can
-    -- arrive claiming to be labelled while reading "Cooler"; trusting the flag would
-    -- leave it that way for good. Reading the name back also keeps a cooler the player
-    -- has renamed themselves intact.
-    local labelled = #name > #suffix and string.sub(name, -#suffix) == suffix
-    local base = labelled and string.sub(name, 1, #name - #suffix) or md.tcBaseName or name
-    local wanted = iced and (base .. suffix) or base
+    -- arrive claiming to be labelled while reading "Cooler". Reading the name back also
+    -- leaves a cooler the player has renamed themselves alone.
+    local name = coolerItem:getName()
+    local base = stripLabel(name)
+    local wanted = iced and (base .. icedSuffix()) or base
 
-    md.tcNamed = iced or nil
-    md.tcBaseName = iced and base or nil
+    -- Older versions kept this state in modData. The name is the truth now.
+    local md = coolerItem:getModData()
+    md.tcNamed, md.tcBaseName = nil, nil
 
     if name ~= wanted then
         coolerItem:setName(wanted)
@@ -559,7 +662,7 @@ function CF.processCooler(coolerItem, isCold)
     -- the food (getOutermostContainer walks past the cooler), so only recharge the ice.
     if isCold then
         for _, entry in ipairs(iceItems) do
-            CF.setCharge(entry.item, CF.getCharge(entry.item) + dt / CF.opt("FreezeHours", 6.0))
+            CF.setCharge(entry.item, CF.getCharge(entry.item) + dt / CF.opt("FreezeHours", 7.0))
         end
         for _, item in ipairs(contents) do
             CF.ageFood(item, 1.0, dt, 0, id)
@@ -602,6 +705,8 @@ function CF.processContainer(inventory, isCold, depth)
         contents[#contents + 1] = list:get(i)
     end
 
+    CF.processFreezing(inventory, isCold)
+
     for _, item in ipairs(contents) do
         CF.processItem(item, isCold, depth)
     end
@@ -630,19 +735,92 @@ end
 
 function CF.processTopLevel(inventory)
     if not inventory then return end
-    CF.processContainer(inventory, containerIsCold(inventory), 0)
-end
 
--- Run a pass on whatever a client's address names. Nothing on the ground is ever cold:
--- a powered fridge is an object, not a dropped item.
-function CF.processAddress(address)
-    if type(address) ~= "table" then return end
-
-    if address.g then
-        local item = CF.resolveGroundItem(address)
-        if item then CF.processItem(item, false, 0) end
+    -- The loot window gives a cooler bag its own container button, so this can be
+    -- handed the inside of a cooler. Walking that as an ordinary container would melt
+    -- the ice in it at the out-in-the-open rate and never label or rebate anything, so
+    -- go back up to the cooler itself and process it as one.
+    local held = inventory:getContainingItem()
+    if held and CF.isCoolerBag(held) then
+        local outer = held:getContainer()
+        CF.processItem(held, outer ~= nil and containerIsCold(outer) or false, 0)
         return
     end
 
-    CF.processTopLevel(CF.resolveContainer(address))
+    CF.processContainer(inventory, containerIsCold(inventory), 0)
+end
+
+-- What one machine can see of an item, so a client's view and the server's can be laid
+-- side by side. Both halves of the mod print this for the same cooler.
+function CF.describe(item)
+    if not item then return "nothing" end
+
+    local text = item:getFullType() .. "#" .. tostring(item:getID())
+    local inventory = item:IsInventoryContainer() and item:getInventory() or nil
+    if inventory then
+        local contents, ice = {}, 0.0
+        local list = inventory:getItems()
+        for i = 0, list:size() - 1 do
+            local content = list:get(i)
+            contents[#contents + 1] = content:getFullType()
+            local power = CF.icePower(content)
+            if power then ice = ice + CF.getCharge(content) * power end
+        end
+        text = text .. string.format(" holding %d [%s] ice=%.2f",
+            list:size(), table.concat(contents, " "), ice)
+    end
+    return text .. " named " .. tostring(item:getName())
+end
+
+-- What the server can see lying on a square, for when it cannot find what a client
+-- asked about. Item ids are the one thing in an address that has to agree across the
+-- wire, so print both sides of that comparison.
+local function groundReport(address)
+    local square = getSquare(address.x, address.y, address.z)
+    if not square then return "no such square" end
+
+    local seen, dropped = {}, square:getWorldObjects()
+    for i = 0, dropped:size() - 1 do
+        local item = dropped:get(i):getItem()
+        seen[#seen + 1] = item and (item:getFullType() .. "#" .. tostring(item:getID())) or "?"
+    end
+    if #seen == 0 then return "square holds nothing" end
+    return "square holds " .. table.concat(seen, ", ")
+end
+
+-- Run a pass on whatever a client's address names, and say what that was. Nothing on
+-- the ground is ever cold: a powered fridge is an object, not a dropped item.
+function CF.processAddress(address)
+    if type(address) ~= "table" then return "not an address" end
+
+    if address.g then
+        local item = CF.resolveGroundItem(address)
+        if not item then
+            return string.format("item #%s not on the ground at %s,%s,%s - %s",
+                tostring(address.g), tostring(address.x), tostring(address.y),
+                tostring(address.z), groundReport(address))
+        end
+        local before = CF.describe(item)
+        CF.processItem(item, false, 0)
+
+        -- No attempt to push this back out. Nothing lying on the ground is in a
+        -- container, and sendItemStats and syncItemFields both address an item by the
+        -- container holding it, so neither can carry a dropped item's state. The one
+        -- call that does reach a world object, transmitCompleteItemToClients, ADDS an
+        -- object rather than updating one: clients end up with a second cooler beside
+        -- the first, and the ghost cannot be picked up because the server has only
+        -- ever had one. So the server keeps the true state - it is the copy that gets
+        -- saved - and a client catches up when the item is streamed again or picked
+        -- up, at which point its own pass reconciles the whole gap from the timestamp.
+        return "ground " .. before .. " -> " .. CF.describe(item)
+    end
+
+    local container = CF.resolveContainer(address)
+    if not container then
+        return string.format("no container at %s,%s,%s object %s index %s",
+            tostring(address.x), tostring(address.y), tostring(address.z),
+            tostring(address.o), tostring(address.c))
+    end
+    CF.processTopLevel(container)
+    return "container " .. tostring(container:getType())
 end

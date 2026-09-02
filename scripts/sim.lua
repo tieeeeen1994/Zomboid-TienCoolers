@@ -8,6 +8,9 @@ SandboxVars = { FoodRotSpeed = 3, TienCoolers = {} }
 function getClimateManager() return { getTemperature = function() return 20.0 end } end
 function ZombRand(n) return 12345 end
 function getText(k) return k end
+-- net.translated is what a client has and a dedicated server does not.
+net = net or {}
+function getTextOrNull(k) return net.translated ~= false and k or nil end
 Fluid = { Water = "Water" }
 
 local classes = {}
@@ -15,7 +18,8 @@ function instanceof(o, c) return o.__cls and o.__cls[c] == true end
 
 -- The vanilla send*/sync* helpers. In game they do nothing offline, which is why the
 -- mod calls them unguarded; here they record what would have gone over the wire.
-net = { packets = {}, client = false, players = {}, squares = {}, vehicles = {} }
+net.packets, net.client, net.players = {}, false, {}
+net.squares, net.vehicles, net.translated = {}, {}, true
 
 function net.log(fmt, ...)
     net.packets[#net.packets + 1] = string.format(fmt, ...)
@@ -41,6 +45,10 @@ function syncItemModData(_, item) net.log("moddata:%s", item:getFullType()) end
 function syncItemFields(_, item) net.log("fields:%s", item:getFullType()) end
 function sendAddItemToContainer(_, item) net.log("add:%s", item:getFullType()) end
 function sendRemoveItemFromContainer(_, item) net.log("remove:%s", item:getFullType()) end
+function sendServerCommand(_, module, command, args)
+    net.log("reply:%s", command)
+    net.lastReply = { command = command, args = args }
+end
 function sendClientCommand(_, module, command, args)
     net.log("command:%s", command)
     net.lastCommand = { module = module, command = command, args = args }
@@ -75,6 +83,7 @@ function Container:getItems()
         get = function(_, i) return snapshot[i + 1] end,
     }
 end
+function Container:getType() return self.kind end
 function Container:isFridge() return self.kind == "fridge" end
 function Container:isFreezer() return self.kind == "freezer" end
 function Container:isPowered() return self.powered end
@@ -119,6 +128,7 @@ function newPlayer(num, isLocal)
     player.inventory = newContainer("bag")
     player.inventory.parent = player
     function player:isLocalPlayer() return isLocal end
+    function player:getUsername() return "player" .. num end
     function player:getInventory() return self.inventory end
     net.players[num] = player
     return player
@@ -126,22 +136,11 @@ end
 
 -- A container standing in the world, the way a fridge or a crate does. The server
 -- looks these up again by square and index, so the stub has to be indexable too.
--- Set a bag down on the ground: it becomes its own world object on that square.
-function dropOnGround(item, x, y, z)
-    newWorldContainer(x, y, z, "bag", false)          -- makes sure the square exists
-    local square = net.squares[x .. "," .. y .. "," .. z]
-    table.insert(square.dropped, { getItem = function() return item end })
-    item.worldItem = { getSquare = function() return square end }
-    item.container = nil
-    return item
-end
-
-function newWorldContainer(x, y, z, kind, powered)
-    local container = newContainer(kind, powered)
+local function squareAt(x, y, z)
     local key = x .. "," .. y .. "," .. z
     local square = net.squares[key]
     if not square then
-        square = { objects = {} }
+        square = { objects = {}, dropped = {} }
         function square:getX() return x end
         function square:getY() return y end
         function square:getZ() return z end
@@ -150,7 +149,8 @@ function newWorldContainer(x, y, z, kind, powered)
             return { size = function() return #list end,
                      get = function(_, i) return list[i + 1] end }
         end
-        square.dropped = {}
+        -- Dropped items are a separate list from the square's objects. Looking for one
+        -- in getObjects() is exactly the mistake that stopped ground coolers working.
         function square:getWorldObjects()
             local list = self.dropped
             return { size = function() return #list end,
@@ -158,6 +158,29 @@ function newWorldContainer(x, y, z, kind, powered)
         end
         net.squares[key] = square
     end
+    return square
+end
+
+-- Set a bag down on the ground. IsoWorldInventoryObject's constructor calls
+-- IsoObject.setContainer, so the world object becomes the parent of the dropped bag's
+-- container: a bag on the ground does have a parent, it just is not one of the
+-- square's objects. Anything less faithful hides the bug instead of catching it.
+function dropOnGround(item, x, y, z)
+    local square = squareAt(x, y, z)
+    local worldObject = { getSquare = function() return square end }
+    -- IsoWorldInventoryObject is an IsoObject, so this is how the server re-sends a
+    -- dropped item to clients. The stub counts the calls.
+    function worldObject:transmitCompleteItemToClients() net.log("resend:%s", item:getFullType()) end
+    table.insert(square.dropped, { getItem = function() return item end })
+    item.worldItem = worldObject
+    item.container = nil
+    if item.inventory then item.inventory.parent = worldObject end
+    return item
+end
+
+function newWorldContainer(x, y, z, kind, powered)
+    local container = newContainer(kind, powered)
+    local square = squareAt(x, y, z)
 
     local object = { containers = { container } }
     function object:getSquare() return square end
@@ -278,13 +301,13 @@ half.delta = 0.25
 CF.processTopLevel(freezer)
 clock.hours = 3
 CF.processTopLevel(freezer)
-passed = report("half bag after 3h refreezing", half.delta, 0.25 + 3 / 6) and passed
+passed = report("half bag after 3h refreezing", half.delta, 0.25 + 3 / 7) and passed
 
 -- Scenario: water in a powered freezer becomes ice after FreezeHours.
 clock.hours = 0
 local freezer2 = newContainer("freezer", true)
 local bottle = newItem("Base.WaterBottleFull", { InventoryItem = true })
-bottle.amount = 2.5
+bottle.amount = 12.5
 bottle.fluid = {
     getAmount = function() return bottle.amount end,
     contains = function() return true end,
@@ -293,14 +316,72 @@ bottle.fluid = {
 freezer2:add(bottle)
 CF.startFreezingWater(bottle)
 CF.processTopLevel(freezer2)
-clock.hours = 7
+clock.hours = 8
 CF.processTopLevel(freezer2)
 local bags = 0
 for _, it in ipairs(freezer2.list) do
     if it:getFullType() == "TienCoolers.IceBag" then bags = bags + 1 end
 end
-passed = report("bags of ice from 2.5 units of water", bags, 2) and passed
-passed = report("water left in the bottle", bottle.amount, 0.5) and passed
+passed = report("bags of ice from 12.5 units of water", bags, 2) and passed
+passed = report("water left in the bottle", bottle.amount, 2.5) and passed
+
+-- Scenario: water pools by container. Three glasses that could never make a bag on
+-- their own add up to one, and the water is drawn off the emptiest first so the little
+-- containers come out empty rather than all of them keeping a dribble.
+local function newGlass(amount)
+    local glass = newItem("Base.Glass", { InventoryItem = true })
+    glass.amount = amount
+    glass.fluid = {
+        getAmount = function() return glass.amount end,
+        contains = function() return true end,
+        removeFluid = function(_, v) glass.amount = glass.amount - v end,
+    }
+    return glass
+end
+
+clock.hours = 0
+local pooling = newContainer("freezer", true)
+local glassA, glassB, glassC = newGlass(2.0), newGlass(2.0), newGlass(2.0)
+for _, glass in ipairs({ glassA, glassB, glassC }) do
+    pooling:add(glass)
+    passed = reportStr("a glass too small for a bag can still be marked",
+        CF.canFreezeWater(glass), true) and passed
+    CF.startFreezingWater(glass)
+end
+
+CF.processTopLevel(pooling)
+clock.hours = 8
+CF.processTopLevel(pooling)
+
+local pooledBags = 0
+for _, it in ipairs(pooling.list) do
+    if it:getFullType() == "TienCoolers.IceBag" then pooledBags = pooledBags + 1 end
+end
+passed = report("three 2-unit glasses make one 5-unit bag", pooledBags, 1) and passed
+passed = report("  and the water comes out of them in turn",
+    glassA.amount + glassB.amount + glassC.amount, 1.0) and passed
+passed = reportStr("  emptying the first two rather than sipping all three",
+    (glassA.amount == 0 and glassB.amount == 0), true) and passed
+passed = reportStr("  the drained ones stop waiting to freeze",
+    CF.isFreezingWater(glassA), false) and passed
+passed = reportStr("  and the one still holding water keeps waiting",
+    CF.isFreezingWater(glassC), true) and passed
+
+-- Not enough between them: nothing happens and nothing is lost.
+clock.hours = 0
+local shortfall = newContainer("freezer", true)
+local dribbleA, dribbleB = newGlass(1.0), newGlass(1.5)
+shortfall:add(dribbleA)
+shortfall:add(dribbleB)
+CF.startFreezingWater(dribbleA)
+CF.startFreezingWater(dribbleB)
+CF.processTopLevel(shortfall)
+clock.hours = 8
+CF.processTopLevel(shortfall)
+passed = report("two glasses short of a bag make none", #shortfall.list, 2) and passed
+passed = report("  and keep their water", dribbleA.amount + dribbleB.amount, 2.5) and passed
+passed = reportStr("  and stay marked, waiting for more",
+    CF.isFreezingWater(dribbleA), true) and passed
 
 -- Scenario: the inventory window's blue tint. ISInventoryPane tints a row when
 -- getHeat() < 1, at strength getInvHeat() = 1 - (heat - 0.2) / 0.8.
@@ -473,6 +554,13 @@ net.loot = { backpacks = { { inventory = fridge } } }
 local everyMinute = handlers.EveryOneMinute
 everyMinute()
 passed = reportStr("the fridge is handed to the server", net.sent("command:tick"), 1) and passed
+passed = reportStr("no version check while tracing is off", net.sent("command:version"), 0) and passed
+
+CF.DEBUG = true                                  -- the handshake is part of the tracing
+everyMinute()                                    -- same moment, so no second tick
+passed = reportStr("the client asks the server which build it is running",
+    net.sent("command:version"), 1) and passed
+CF.DEBUG = false
 everyMinute()
 passed = reportStr("a repeat inside the window is dropped", net.sent("command:tick"), 1) and passed
 net.ms = 60000
@@ -489,7 +577,7 @@ net.client = true
 -- so the menu updates at once, and the work itself is handed over.
 net.packets = {}
 local jug = newItem("Base.WaterBottleFull", { InventoryItem = true })
-jug.amount = 1.0
+jug.amount = 5.0
 jug.fluid = {
     getAmount = function() return jug.amount end,
     contains = function() return true end,
@@ -520,7 +608,7 @@ passed = reportStr("the server marked the water", jug.md.tcFreezing, true) and p
 passed = reportStr("and told the client", net.sent("moddata:Base.WaterBottleFull"), 1) and passed
 passed = reportStr("the sync player is released again", CF.syncPlayer, nil) and passed
 
-clock.hours = 7
+clock.hours = 8
 net.packets = {}
 handlers.OnClientCommand("TienCoolers", "tick", me, request)
 passed = reportStr("the server froze the water on request",
@@ -553,6 +641,37 @@ droppedSteak.age = droppedSteak.age + 24 / 24
 handlers.OnClientCommand("TienCoolers", "tick", me, groundAddress)
 passed = report("the server melts ice in a cooler on the ground", droppedIce.delta, 0.5) and passed
 passed = report("and rebates the rot it prevented", droppedSteak.age, 0.25) and passed
+
+-- Putting ice into a cooler that is already on the ground: the loot window hands us
+-- that cooler's own container button, which is the inside of a cooler and must not be
+-- walked as if it were an ordinary container.
+net.client = true
+clock.hours = 0
+local onFloor = newBag("Base.Cooler")
+dropOnGround(onFloor, 12, 35, 0)
+local floorIce = onFloor.inventory:AddItem("TienCoolers.IceBag")
+passed = reportStr("a dropped cooler's container has the world object as its parent",
+    onFloor.inventory:getParent() ~= nil, true) and passed
+passed = reportStr("and it is still addressable",
+    CF.addressContainer(onFloor.inventory) ~= nil, true) and passed
+
+net.client = false
+CF.processTopLevel(onFloor.inventory)          -- what the cooler's own button gives us
+passed = reportStr("ice put into a cooler on the ground labels it",
+    onFloor:getName(), "Base.Cooler " .. ICED) and passed
+clock.hours = 24
+CF.processTopLevel(onFloor.inventory)
+passed = report("and melts at the in-a-cooler rate, not the open-air one",
+    floorIce.delta, 0.5) and passed
+
+-- transmitCompleteItemToClients ADDS a world object rather than updating one, so using
+-- it to push a dropped item's new state gives every client a second cooler next to the
+-- first, and the ghost cannot be picked up. Nothing may re-send a world object here.
+net.packets = {}
+clock.hours = clock.hours + 12
+handlers.OnClientCommand("TienCoolers", "tick", me, groundAddress)
+passed = reportStr("a ground pass never re-sends the world object",
+    net.sent("resend:Base.Cooler"), 0) and passed
 
 -- A loose bag of ice lying next to it is a world object too, and the floor list is
 -- walked for exactly these because the list itself has no address.
@@ -603,6 +722,128 @@ ownIce.delta = 0.0
 clock.hours = 1
 CF.processTopLevel(me:getInventory())
 passed = reportStr("  and gets it back when the ice is gone", ownName:getName(), "Beer Stash") and passed
+
+-- A server with no translations for a modded key must not stamp the raw key onto the
+-- item, and a cooler already carrying one has to be repaired rather than labelled twice.
+net.translated = false
+local serverSide = newBag("Base.Cooler")
+serverSide.inventory:AddItem("TienCoolers.IceBag")
+me.inventory:add(serverSide)
+clock.hours = 0
+CF.processTopLevel(me:getInventory())
+passed = reportStr("an untranslated label falls back to plain English",
+    serverSide:getName(), "Base.Cooler (Iced)") and passed
+
+local stamped = newBag("Base.Cooler")
+stamped:setName("Base.Cooler " .. ICED)          -- what the raw key left behind
+stamped.inventory:AddItem("TienCoolers.IceBag")
+me.inventory:add(stamped)
+CF.processTopLevel(me:getInventory())
+passed = reportStr("a name stamped with the raw key is repaired",
+    stamped:getName(), "Base.Cooler (Iced)") and passed
+net.translated = true
+
+-- The model, stated as a test: two machines each tick their own copy of the same
+-- cooler over the same stretch of time and land on the same state, without exchanging
+-- anything. That is what lets a client tick a container it does not own - which is
+-- what makes a cooler on the floor cool live - and it is how vanilla treats food rot.
+local function newIdenticalCooler(hours)
+    local cooler = newBag("Base.Cooler")
+    local ice = cooler.inventory:AddItem("TienCoolers.IceBag")
+    local food = newItem("Base.Steak", { InventoryItem = true, Food = true })
+    food.offAgeMax = 1000
+    cooler.inventory:add(food)
+    clock.hours = hours
+    CF.processTopLevel(cooler.inventory)          -- both start from the same baseline
+    return cooler, ice, food
+end
+
+clock.hours = 0
+net.client = true
+local clientCooler, clientIce, clientFood = newIdenticalCooler(0)
+net.client = false
+local serverCooler, serverIce, serverFood = newIdenticalCooler(0)
+
+clock.hours = 18
+clientFood.age = 18 / 24
+serverFood.age = 18 / 24
+net.client = true
+CF.processTopLevel(clientCooler.inventory)        -- the client's own copy
+net.client = false
+CF.processTopLevel(serverCooler.inventory)        -- the server's own copy
+
+passed = report("client and server melt the ice to the same point",
+    clientIce.delta, serverIce.delta) and passed
+passed = report("  and rebate the same rot", clientFood.age, serverFood.age) and passed
+passed = reportStr("  and label it the same", clientCooler:getName(), serverCooler:getName()) and passed
+passed = reportStr("  which is not the untouched value", clientIce.delta < 1.0, true) and passed
+
+-- Ticking the same copy twice in the same moment must stay a no-op, or a client and a
+-- server both ticking would count the time twice.
+local before = clientIce.delta
+CF.processTopLevel(clientCooler.inventory)
+CF.processTopLevel(clientCooler.inventory)
+passed = report("and a second pass in the same moment changes nothing", clientIce.delta, before) and passed
+
+-- Making ice out of water is the exception: a transfer, not a computation. If every
+-- machine did it there would be a bag of ice per machine.
+clock.hours = 0
+local sharedFreezer = newWorldContainer(60, 60, 0, "freezer", true)
+local sharedJug = newItem("Base.WaterBottleFull", { InventoryItem = true })
+sharedJug.amount = 5.0
+sharedJug.fluid = {
+    getAmount = function() return sharedJug.amount end,
+    contains = function() return true end,
+    removeFluid = function(_, v) sharedJug.amount = sharedJug.amount - v end,
+}
+sharedFreezer:add(sharedJug)
+CF.startFreezingWater(sharedJug)
+
+net.client = true
+CF.processTopLevel(sharedFreezer)
+clock.hours = 8
+CF.processTopLevel(sharedFreezer)
+local made = 0
+for _, it in ipairs(sharedFreezer.list) do
+    if it:getFullType() == "TienCoolers.IceBag" then made = made + 1 end
+end
+passed = reportStr("a client makes no ice in a freezer it does not own", made, 0) and passed
+passed = reportStr("  and leaves the water marked so the server still will",
+    CF.isFreezingWater(sharedJug), true) and passed
+
+net.client = false
+CF.processTopLevel(sharedFreezer)
+made = 0
+for _, it in ipairs(sharedFreezer.list) do
+    if it:getFullType() == "TienCoolers.IceBag" then made = made + 1 end
+end
+passed = reportStr("and the owner does make it", made, 1) and passed
+
+-- A client still nudges the server for what it does not own, so the saved copy keeps up.
+net.client = true
+net.packets = {}
+net.ms = net.ms + 60000
+net.loot = { backpacks = { { inventory = fridge } } }
+handlers.EveryOneMinute()
+passed = reportStr("a client ticks locally and nudges the server", net.sent("command:tick"), 1) and passed
+
+-- The version handshake, which is how a server left on an older build makes itself
+-- known instead of just looking like a broken mod.
+net.packets = {}
+net.client = true
+CF.DEBUG = true
+handlers.EveryOneMinute()
+passed = reportStr("and does not ask again", net.sent("command:version"), 0) and passed
+CF.DEBUG = false
+
+net.client = false
+handlers.OnClientCommand("TienCoolers", "version", me, {})
+passed = reportStr("the server answers with its own", net.lastReply.args.v, CF.VERSION) and passed
+
+CF.DEBUG = true
+local ok = pcall(function() handlers.OnServerCommand("TienCoolers", "version", { v = "0.0.1" }) end)
+passed = reportStr("a mismatched answer is reported, not thrown", ok, true) and passed
+CF.DEBUG = false
 
 net.packets = {}
 handlers.OnClientCommand("SomeOtherMod", "tick", me, request)

@@ -36,10 +36,13 @@ local function onClientCommand(module, command, player, args)
     -- Answer on the requesting player's connection while we work.
     CF.syncPlayer = player
     if command == "tick" then
-        CF.processAddress(args)
+        CF.debug("tick from %s: %s",
+            player and player:getUsername() or "?", CF.processAddress(args))
     elseif command == "setFreezing" then
         local container = CF.resolveContainer(args)
         if container then onSetFreezing(container, args, player) end
+    elseif command == "version" then
+        sendServerCommand(player, "TienCoolers", "version", { v = CF.VERSION })
     end
     CF.syncPlayer = nil
 end

@@ -18,7 +18,8 @@ gives them their intended purpose and adds the ice to fill them with.
   faster outside one. Hot weather shortens it further. How much ice is left is shown on the
   bag itself.
 - **Freezing water.** Right-click a container of water inside a powered refrigerator or
-  freezer and choose *Freeze Into Ice*. Six hours later the water has become a bag of ice. A
+  freezer and choose *Freeze Into Ice*. Seven hours later the water has become a bag of ice. Water adds up across everything.
+  you set to freeze in the same fridge, so a few bottles make a bag between them. A
   bag that has melted refills itself if it is left in a powered freezer.
 - **Cold Packs.** The vanilla Cold Pack chills a cooler as well, at 40 percent of the strength
   of a bag of ice.
@@ -34,10 +35,10 @@ a cooler is never allowed to preserve food better than a powered refrigerator do
 
 ## Compatibility
 
-Build 42 only. The mod can be added to an existing save. Multiplayer is supported: a cooler
-you are carrying is handled by your own game, and one in a fridge, a car or on the ground by
-the server, so nothing is ever counted twice. A dedicated server needs no additional setup
-beyond having the mod installed.
+Build 42 only. The mod can be added to an existing save. Multiplayer is supported: coolers
+work the same wherever they are, carried, in a fridge, in a car or on the ground, and every
+player sees them update as they happen. A dedicated server needs no additional setup beyond
+having the mod installed.
 
 Other mods can register their own coolers and cold sources. The
 [implementation notes](docs/implementation.md) explain how, along with the rest of the

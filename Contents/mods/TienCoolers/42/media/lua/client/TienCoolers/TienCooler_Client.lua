@@ -1,11 +1,15 @@
 --[[
     Tien's Coolers - client driver.
 
-    The player's own inventory is ticked here: the client owns what its player carries
-    and transmits it, so a cooler on your back behaves the same offline and online.
-    A container out in the world belongs to the server, so in multiplayer this file
-    only asks for it to be ticked and TienCooler_Server.lua does the work. Offline and
-    on a co-op host CF.ownsContainer is true for everything and nothing is sent.
+    This ticks every container the player can see, once a minute and whenever the loot
+    window rebuilds. Not only the ones this machine owns: a pass is worked out from a
+    timestamp on the item, so this client and the server each apply the same elapsed
+    time to their own copy and agree without talking, exactly as vanilla does with food
+    rot. That is what makes a cooler on the floor cool live on screen.
+
+    The server is nudged separately for containers this client does not own, so that
+    its copy - the one that gets saved, and the only one allowed to turn water into ice
+    - keeps up. Offline that nudge never happens and nothing changes.
 ]]
 
 require "TienCoolers/TienCooler_Shared"
@@ -25,7 +29,7 @@ local function addressKey(address)
     return address.x .. "," .. address.y .. "," .. address.z .. "," .. address.o .. "," .. address.c
 end
 
-local function request(player, address)
+local function request(player, address, item)
     if not address then return false end
 
     local key = addressKey(address)
@@ -41,6 +45,8 @@ local function request(player, address)
     requestCount = requestCount + 1
 
     sendClientCommand(player, "TienCoolers", "tick", address)
+    CF.debug("asked the server to tick %s: I see %s", key,
+        item and CF.describe(item) or "a container")
     return true
 end
 
@@ -51,23 +57,78 @@ local function worthTicking(item)
         or item:getModData().tcFreezing == true
 end
 
+-- Every container this client can see is ticked here, whoever owns it. The pass works
+-- from a timestamp on the item, so this machine and the server each apply the same
+-- elapsed time to their own copy and land on the same state: nothing is counted twice
+-- and nothing has to be sent back, which is what makes a cooler on the floor update
+-- live instead of waiting on a round trip.
+--
+-- The server still gets a nudge for anything this client does not own, because its
+-- copy is the one that gets saved and it is the only machine allowed to turn water
+-- into ice. That is a slow background correctness job, not what the player is watching.
 local function process(player, inventory)
-    if not inventory then return end
-    if CF.ownsContainer(inventory) then
-        CF.processTopLevel(inventory)
-        return
+    if not inventory then return "empty" end
+
+    CF.processTopLevel(inventory)
+
+    if not player or CF.ownsContainer(inventory) then return "mine" end
+    if request(player, CF.addressContainer(inventory), inventory:getContainingItem()) then
+        return "ticked, server nudged"
     end
-    if not player then return end
-    if request(player, CF.addressContainer(inventory)) then return end
 
     -- The loot window's floor list is built client side and has no address of its own,
     -- but a cooler or a bag of ice lying in it is a world object the server can find.
+    local handed = 0
     local list = inventory:getItems()
     for i = 0, list:size() - 1 do
         local item = list:get(i)
-        if worthTicking(item) then
-            request(player, CF.addressGroundItem(item))
+        if worthTicking(item) and request(player, CF.addressGroundItem(item), item) then
+            handed = handed + 1
         end
+    end
+    if handed > 0 then return "ticked, floor nudged" end
+
+    return "ticked, no nudge"
+end
+
+--[[ Version handshake ]]
+
+-- Half of this mod runs on the server, and a dedicated server only picks up a new
+-- Workshop build when it restarts. A server left on an older build still accepts a
+-- player who has the newer one, and the result reads exactly like a mod bug. Asking it
+-- which build it is on settles that in one line - but it is a diagnostic, so it goes
+-- through CF.DEBUG like the rest: nothing is asked and nothing is said unless someone
+-- has turned tracing on. An older server has no handler for this and never answers,
+-- which is itself the answer.
+local handshake = { asked = false, heard = false, minutes = 0 }
+
+local function checkServerVersion(player)
+    if not isClient() or not CF.DEBUG then return end
+
+    if not handshake.asked then
+        handshake.asked = true
+        sendClientCommand(player, "TienCoolers", "version", {})
+        return
+    end
+
+    if handshake.heard then return end
+    handshake.minutes = handshake.minutes + 1
+    if handshake.minutes == 3 then
+        CF.debug("the server has not answered a version check. It is probably running an "
+            .. "older build of the mod - restart it to pick up %s. Until then coolers work "
+            .. "in your inventory but not on the ground or in a fridge.", CF.VERSION)
+    end
+end
+
+local function onServerCommand(module, command, args)
+    if module ~= "TienCoolers" or command ~= "version" then return end
+    handshake.heard = true
+
+    if args.v == CF.VERSION then
+        CF.debug("server and client are both on %s.", CF.VERSION)
+    else
+        CF.debug("version mismatch - server is on %s, this client is on %s. "
+            .. "Restart the server to pick up the new build.", tostring(args.v), CF.VERSION)
     end
 end
 
@@ -75,12 +136,29 @@ local function onEveryOneMinute()
     for playerNum = 0, getNumActivePlayers() - 1 do
         local player = getSpecificPlayer(playerNum)
         if player then
+            if playerNum == 0 then checkServerVersion(player) end
             CF.processTopLevel(player:getInventory())
 
             local loot = getPlayerLoot(playerNum)
             if loot and loot.backpacks then
+                local counts, mine = {}, 0
                 for _, containerButton in ipairs(loot.backpacks) do
-                    process(player, containerButton.inventory)
+                    local what = process(player, containerButton.inventory)
+                    if what == "mine" then
+                        mine = mine + 1
+                    else
+                        counts[what] = (counts[what] or 0) + 1
+                    end
+                end
+
+                local parts = {}
+                for _, key in ipairs({ "ticked, server nudged", "ticked, floor nudged",
+                                       "ticked, no nudge", "empty" }) do
+                    if counts[key] then parts[#parts + 1] = counts[key] .. " " .. key end
+                end
+                if #parts > 0 then
+                    CF.debug("loot window: %d containers, %d mine, %s",
+                        #loot.backpacks, mine, table.concat(parts, ", "))
                 end
             end
         end
@@ -164,7 +242,7 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
             onStartFreezing, freezable)
         local tooltip = ISInventoryPaneContextMenu.addToolTip()
         tooltip.description = getText("Tooltip_TienCoolers_Freeze",
-            round(CF.opt("FreezeHours", 6.0), 1), round(CF.opt("WaterPerBag", 1.0), 2))
+            round(CF.opt("FreezeHours", 7.0), 1), round(CF.opt("WaterPerBag", 5.0), 2))
         option.toolTip = tooltip
     end
 
@@ -174,6 +252,7 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
     end
 end
 
+Events.OnServerCommand.Add(onServerCommand)
 Events.EveryOneMinute.Add(onEveryOneMinute)
 Events.OnRefreshInventoryWindowContainers.Add(onRefreshContainers)
 Events.OnFillInventoryObjectContextMenu.Add(onFillInventoryContextMenu)
