@@ -1,4 +1,4 @@
 {
-    "Tooltip_CFIceBag": "Keeps food fresh inside a cooler. Melts slowly in a cooler, quickly anywhere else, and refreezes in a powered fridge or freezer.",
-    "Tooltip_CoolerFridge_Freeze": "Leave it in the powered freezer for %1 hours. Every %2 units of water becomes one bag of ice."
+    "Tooltip_TienCoolerIceBag": "Keeps food fresh inside a cooler. Melts slowly in a cooler, quickly anywhere else, and refreezes in a powered fridge or freezer.",
+    "Tooltip_TienCoolers_Freeze": "Leave it in the powered freezer for %1 hours. Every %2 units of water becomes one bag of ice."
 }

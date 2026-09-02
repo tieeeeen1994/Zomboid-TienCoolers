@@ -1,10 +1,10 @@
--- Offline harness for CoolerFridge_Shared.lua: fakes just enough of the PZ API to
+-- Offline harness for TienCooler_Shared.lua: fakes just enough of the PZ API to
 -- run the cooling maths and check the numbers come out where they should.
 
 local clock = { hours = 0 }
 
 GameTime = { getInstance = function() return { getWorldAgeHours = function() return clock.hours end } end }
-SandboxVars = { FoodRotSpeed = 3, CoolerFridge = {} }
+SandboxVars = { FoodRotSpeed = 3, TienCoolers = {} }
 function getClimateManager() return { getTemperature = function() return 20.0 end } end
 function ZombRand(n) return 12345 end
 function getText(k) return k end
@@ -78,8 +78,8 @@ function Item:setHeat(v) self.heat = v end
 
 -- ---------------------------------------------------------------------------
 dofile((arg and arg[1]) or
-    "../Contents/mods/CoolerFridge/42/media/lua/shared/CoolerFridge/CoolerFridge_Shared.lua")
-local CF = CoolerFridge
+    "../Contents/mods/TienCoolers/42/media/lua/shared/TienCoolers/TienCooler_Shared.lua")
+local CF = TienCoolers
 
 local function reportStr(label, value, expected)
     local ok = value == expected
@@ -99,7 +99,7 @@ local passed = true
 -- rotSpeed/24 per hour; we step an hour at a time and let the mod react.
 local cooler = newItem("Base.Cooler", { InventoryItem = true })
 cooler.inventory = newContainer("bag")
-local ice = cooler.inventory:AddItem("CoolerFridge.IceBag")
+local ice = cooler.inventory:AddItem("TienCoolers.IceBag")
 local steak = newItem("Base.Steak", { InventoryItem = true, Food = true })
 steak.offAgeMax = 1000
 cooler.inventory:add(steak)
@@ -122,7 +122,7 @@ passed = report("melted bag removed from cooler", #cooler.inventory.list, 1) and
 -- Scenario: ice sitting loose in a backpack melts five times faster (48 * 0.2 = 9.6 h).
 clock.hours = 0
 local pack = newContainer("bag")
-local loose = pack:AddItem("CoolerFridge.IceBag")
+local loose = pack:AddItem("TienCoolers.IceBag")
 CF.processTopLevel(pack)
 clock.hours = 5
 CF.processTopLevel(pack)
@@ -131,7 +131,7 @@ passed = report("loose ice left after 5h", loose.delta, 1 - 5 / 9.6) and passed
 -- Scenario: a bag of ice in a powered freezer refills over FreezeHours.
 clock.hours = 0
 local freezer = newContainer("freezer", true)
-local half = freezer:AddItem("CoolerFridge.IceBag")
+local half = freezer:AddItem("TienCoolers.IceBag")
 half.delta = 0.25
 CF.processTopLevel(freezer)
 clock.hours = 3
@@ -155,7 +155,7 @@ clock.hours = 7
 CF.processTopLevel(freezer2)
 local bags = 0
 for _, it in ipairs(freezer2.list) do
-    if it:getFullType() == "CoolerFridge.IceBag" then bags = bags + 1 end
+    if it:getFullType() == "TienCoolers.IceBag" then bags = bags + 1 end
 end
 passed = report("bags of ice from 2.5 units of water", bags, 2) and passed
 passed = report("water left in the bottle", bottle.amount, 0.5) and passed
@@ -167,7 +167,7 @@ local function invHeat(h) return 1 - (h - 0.2) / 0.8 end
 clock.hours = 0
 local box = newItem("Base.Cooler", { InventoryItem = true })
 box.inventory = newContainer("bag")
-local cube = box.inventory:AddItem("CoolerFridge.IceBag")
+local cube = box.inventory:AddItem("TienCoolers.IceBag")
 local ham = newItem("Base.Ham", { InventoryItem = true, Food = true })
 ham.offAgeMax = 1000
 box.inventory:add(ham)
@@ -199,25 +199,50 @@ CF.processTopLevel(warm)
 passed = report("no ice, no chill", ham.heat, 1.0) and passed
 
 -- And the sandbox option switches the whole thing off.
-SandboxVars.CoolerFridge.ShowColdTint = false
+SandboxVars.TienCoolers.ShowColdTint = false
 local plain = newItem("Base.Ham", { InventoryItem = true, Food = true })
 plain.offAgeMax = 1000
 box.inventory:add(plain)
-box.inventory:AddItem("CoolerFridge.IceBag")
+box.inventory:AddItem("TienCoolers.IceBag")
 clock.hours = 3
 CF.processTopLevel(warm)
 passed = report("tint disabled leaves heat alone", plain.heat, 1.0) and passed
-SandboxVars.CoolerFridge.ShowColdTint = nil
+SandboxVars.TienCoolers.ShowColdTint = nil
+
+-- Scenario: a cooler can never preserve food better than a working fridge. With
+-- Refrigeration Effectiveness on "Very Low" a real fridge only manages 0.4, so the
+-- cooler's own 0.25 is floored up to match instead of beating it.
+passed = report("cool factor at default refrigeration", CF.coolFactor(), 0.25) and passed
+SandboxVars.FridgeFactor = 1
+passed = report("cool factor floored by Very Low fridges", CF.coolFactor(), 0.4) and passed
+
+clock.hours = 0
+local floored = newItem("Base.Cooler", { InventoryItem = true })
+floored.inventory = newContainer("bag")
+floored.inventory:AddItem("TienCoolers.IceBag")
+local roast = newItem("Base.Steak", { InventoryItem = true, Food = true })
+roast.offAgeMax = 1000
+floored.inventory:add(roast)
+local shed = newContainer("bag")
+shed:add(floored)
+CF.processTopLevel(shed)          -- baseline pass, as the first minute in game would
+for hour = 1, 24 do
+    clock.hours = hour
+    roast.age = roast.age + ROT
+    CF.processTopLevel(shed)
+end
+passed = report("roast age after 24h at the floor", roast.age, 24 * ROT * 0.4) and passed
+SandboxVars.FridgeFactor = nil
 
 -- Scenario: the (Iced) label on the cooler bag itself. Food is deliberately left
 -- alone - vanilla tints fridge contents but never renames them, and reserves the
 -- name suffix for genuinely frozen items.
-local ICED = "IGUI_CoolerFridge_Iced"   -- getText is stubbed to return the key
+local ICED = "IGUI_TienCoolers_Iced"   -- getText is stubbed to return the key
 
 clock.hours = 0
 local labelled = newItem("Base.Cooler", { InventoryItem = true })
 labelled.inventory = newContainer("bag")
-local chip = labelled.inventory:AddItem("CoolerFridge.IceBag")
+local chip = labelled.inventory:AddItem("TienCoolers.IceBag")
 local chop = newItem("Base.Steak", { InventoryItem = true, Food = true })
 chop.offAgeMax = 1000
 labelled.inventory:add(chop)
@@ -235,15 +260,15 @@ CF.processTopLevel(room)
 passed = reportStr("label removed once ice is gone", labelled:getName(), "Base.Cooler") and passed
 
 -- Turning the option off has to strip a label that is already on the item.
-labelled.inventory:AddItem("CoolerFridge.IceBag")
+labelled.inventory:AddItem("TienCoolers.IceBag")
 clock.hours = 2
 CF.processTopLevel(room)
 passed = reportStr("relabelled after restocking ice", labelled:getName(), "Base.Cooler " .. ICED) and passed
 
-SandboxVars.CoolerFridge.RenameCoolers = false
+SandboxVars.TienCoolers.RenameCoolers = false
 clock.hours = 3
 CF.processTopLevel(room)
 passed = reportStr("option off strips an existing label", labelled:getName(), "Base.Cooler") and passed
-SandboxVars.CoolerFridge.RenameCoolers = nil
+SandboxVars.TienCoolers.RenameCoolers = nil
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

@@ -1,14 +1,14 @@
 --[[
-    Cooler Fridge - client driver.
+    Tien's Coolers - client driver.
 
     Everything runs client side. Item state lives in modData and on the item itself,
     which is what the client already owns and transmits, so a dedicated server needs
     no extra work and nothing is applied twice.
 ]]
 
-require "CoolerFridge/CoolerFridge_Shared"
+require "TienCoolers/TienCooler_Shared"
 
-local CF = CoolerFridge
+local CF = TienCoolers
 
 local function onEveryOneMinute()
     for playerNum = 0, getNumActivePlayers() - 1 do
@@ -82,16 +82,16 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
     end
 
     if #freezable > 0 then
-        local option = context:addOption(getText("ContextMenu_CoolerFridge_Freeze"), nil,
+        local option = context:addOption(getText("ContextMenu_TienCoolers_Freeze"), nil,
             onStartFreezing, freezable)
         local tooltip = ISInventoryPaneContextMenu.addToolTip()
-        tooltip.description = getText("Tooltip_CoolerFridge_Freeze",
+        tooltip.description = getText("Tooltip_TienCoolers_Freeze",
             round(CF.opt("FreezeHours", 6.0), 1), round(CF.opt("WaterPerBag", 1.0), 2))
         option.toolTip = tooltip
     end
 
     if #cancellable > 0 then
-        context:addOption(getText("ContextMenu_CoolerFridge_CancelFreeze"), nil,
+        context:addOption(getText("ContextMenu_TienCoolers_CancelFreeze"), nil,
             onStopFreezing, cancellable)
     end
 end

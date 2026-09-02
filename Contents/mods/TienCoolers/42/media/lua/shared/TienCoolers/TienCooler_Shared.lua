@@ -1,5 +1,5 @@
 --[[
-    Cooler Fridge - shared core.
+    Tien's Coolers - shared core.
 
     Build 42 slows food rot only for containers whose parent IsoObject is a powered
     fridge/freezer (Food.updateAge -> isInFridge/isInFreezer + sourceGrid:haveElectricity).
@@ -9,15 +9,15 @@
     exactly the same result as a slower rot rate and needs no per-tick presence.
 ]]
 
-CoolerFridge = CoolerFridge or {}
-local CF = CoolerFridge
+TienCoolers = TienCoolers or {}
+local CF = TienCoolers
 
-CF.ICE_BAG = "CoolerFridge.IceBag"
+CF.ICE_BAG = "TienCoolers.IceBag"
 
 -- fullType -> cooling power, where 1.0 is one full bag of ice.
 -- Other mods may add their own cold sources to this table.
 CF.IceSources = {
-    ["CoolerFridge.IceBag"] = 1.0,
+    ["TienCoolers.IceBag"] = 1.0,
 }
 
 -- fullType -> true. Bags that behave as insulated coolers.
@@ -33,6 +33,11 @@ CF.CoolerBags = {
 -- Food.getFoodRotSpeed(), keyed by SandboxVars.FoodRotSpeed.
 local ROT_SPEED = { 1.7, 1.4, 1.0, 0.7, 0.4 }
 
+-- Food.getFridgeFactor(), keyed by SandboxVars.FridgeFactor (the "Refrigeration
+-- Effectiveness" sandbox option). Vanilla applies this to powered fridges *and*
+-- freezers; a cooler is never allowed to beat it.
+local FRIDGE_FACTOR = { 0.4, 0.3, 0.2, 0.1, 0.03, 0.0 }
+
 -- ISInventoryPane tints a row blue whenever getHeat() < 1, at the strength of
 -- getInvHeat() = 1 - (heat - 0.2) / 0.8. A powered fridge sets 0.2, so ice matches it
 -- and a cooler reads a shade warmer.
@@ -42,7 +47,7 @@ CF.COOLER_HEAT = 0.35
 local MAX_NESTING = 3
 
 function CF.opt(name, default)
-    local vars = SandboxVars and SandboxVars.CoolerFridge
+    local vars = SandboxVars and SandboxVars.TienCoolers
     if not vars then return default end
     local v = vars[name]
     if v == nil then return default end
@@ -56,6 +61,22 @@ end
 function CF.foodRotSpeed()
     local v = SandboxVars and SandboxVars.FoodRotSpeed
     return ROT_SPEED[v] or 1.0
+end
+
+function CF.fridgeFactor()
+    local v = SandboxVars and SandboxVars.FridgeFactor
+    return FRIDGE_FACTOR[v] or 0.2
+end
+
+-- A box of melting ice cannot preserve food better than a working fridge, so the
+-- cooling strength is floored at whatever the player's Refrigeration Effectiveness
+-- setting gives a real one. At the default settings (cooler 0.25, fridge 0.2) the
+-- floor never bites; on a "Very Low" refrigeration game it stops the cooler from
+-- quietly becoming the best fridge in Kentucky.
+function CF.coolFactor()
+    local factor = CF.opt("CoolFactor", 0.25)
+    local fridge = CF.fridgeFactor()
+    return factor > fridge and factor or fridge
 end
 
 -- Ice melts faster in a Kentucky summer than in a January cold snap.
@@ -93,8 +114,8 @@ function CF.getCharge(item)
         return item:getUsedDelta()
     end
     local md = item:getModData()
-    if md.cfCharge == nil then md.cfCharge = 1.0 end
-    return md.cfCharge
+    if md.tcCharge == nil then md.tcCharge = 1.0 end
+    return md.tcCharge
 end
 
 function CF.setCharge(item, value)
@@ -103,7 +124,7 @@ function CF.setCharge(item, value)
     if instanceof(item, "DrainableComboItem") then
         item:setUsedDelta(value)
     else
-        item:getModData().cfCharge = value
+        item:getModData().tcCharge = value
     end
     return value
 end
@@ -146,15 +167,15 @@ function CF.ageFood(item, factor, dt, rotSpeed, coolerId)
     local age = item:getAge()
 
     if item:isFrozen() or item:isRotten() or item:getOffAgeMax() >= 1000000000 then
-        md.cfAge = age
-        md.cfCooler = coolerId
+        md.tcAge = age
+        md.tcCooler = coolerId
         return
     end
 
-    local prev = md.cfAge
-    if prev == nil or md.cfCooler ~= coolerId or age < prev then
-        md.cfAge = age
-        md.cfCooler = coolerId
+    local prev = md.tcAge
+    if prev == nil or md.tcCooler ~= coolerId or age < prev then
+        md.tcAge = age
+        md.tcCooler = coolerId
         return
     end
 
@@ -166,8 +187,8 @@ function CF.ageFood(item, factor, dt, rotSpeed, coolerId)
         item:setAge(age)
     end
 
-    md.cfAge = age
-    md.cfCooler = coolerId
+    md.tcAge = age
+    md.tcCooler = coolerId
 end
 
 --[[ Ice ]]
@@ -194,8 +215,8 @@ end
 function CF.tickIce(item, isCold)
     local md = item:getModData()
     local now = CF.worldHours()
-    local last = md.cfLast
-    md.cfLast = now
+    local last = md.tcLast
+    md.tcLast = now
 
     if CF.getCharge(item) > 0 then
         CF.chill(item, CF.ICE_HEAT)
@@ -233,26 +254,26 @@ function CF.canFreezeWater(item)
 end
 
 function CF.isFreezingWater(item)
-    return item:getModData().cfFreezing == true
+    return item:getModData().tcFreezing == true
 end
 
 function CF.startFreezingWater(item)
     local md = item:getModData()
-    md.cfFreezing = true
-    md.cfFreezeStart = CF.worldHours()
+    md.tcFreezing = true
+    md.tcFreezeStart = CF.worldHours()
 end
 
 function CF.stopFreezingWater(item)
     local md = item:getModData()
-    md.cfFreezing = nil
-    md.cfFreezeStart = nil
+    md.tcFreezing = nil
+    md.tcFreezeStart = nil
 end
 
 -- Called for every item in a powered fridge/freezer. Water marked for freezing turns
 -- into bags of ice once it has sat there long enough.
 function CF.tickFreezing(item, isCold)
     local md = item:getModData()
-    if not md.cfFreezing then return end
+    if not md.tcFreezing then return end
 
     -- Taken back out of the freezer: forget about it.
     if not isCold then
@@ -261,11 +282,11 @@ function CF.tickFreezing(item, isCold)
     end
 
     local now = CF.worldHours()
-    if md.cfFreezeStart == nil or md.cfFreezeStart > now then
-        md.cfFreezeStart = now
+    if md.tcFreezeStart == nil or md.tcFreezeStart > now then
+        md.tcFreezeStart = now
         return
     end
-    if now - md.cfFreezeStart < CF.opt("FreezeHours", 6.0) then return end
+    if now - md.tcFreezeStart < CF.opt("FreezeHours", 6.0) then return end
 
     local fc = item:getFluidContainer()
     local container = item:getContainer()
@@ -284,7 +305,7 @@ function CF.tickFreezing(item, isCold)
         local bag = container:AddItem(CF.ICE_BAG)
         if bag then
             CF.setCharge(bag, 1.0)
-            bag:getModData().cfLast = now
+            bag:getModData().tcLast = now
         end
     end
 end
@@ -293,10 +314,10 @@ end
 
 local function coolerId(coolerItem)
     local md = coolerItem:getModData()
-    if not md.cfId then
-        md.cfId = tostring(ZombRand(2000000000)) .. "-" .. tostring(ZombRand(2000000000))
+    if not md.tcId then
+        md.tcId = tostring(ZombRand(2000000000)) .. "-" .. tostring(ZombRand(2000000000))
     end
-    return md.cfId
+    return md.tcId
 end
 
 function CF.updateCoolerName(coolerItem, iced)
@@ -307,14 +328,14 @@ function CF.updateCoolerName(coolerItem, iced)
         iced = false
     end
     if iced then
-        if md.cfNamed then return end
-        md.cfBaseName = coolerItem:getName()
-        coolerItem:setName(md.cfBaseName .. " " .. getText("IGUI_CoolerFridge_Iced"))
-        md.cfNamed = true
-    elseif md.cfNamed then
-        if md.cfBaseName then coolerItem:setName(md.cfBaseName) end
-        md.cfNamed = nil
-        md.cfBaseName = nil
+        if md.tcNamed then return end
+        md.tcBaseName = coolerItem:getName()
+        coolerItem:setName(md.tcBaseName .. " " .. getText("IGUI_TienCoolers_Iced"))
+        md.tcNamed = true
+    elseif md.tcNamed then
+        if md.tcBaseName then coolerItem:setName(md.tcBaseName) end
+        md.tcNamed = nil
+        md.tcBaseName = nil
     end
 end
 
@@ -326,8 +347,8 @@ function CF.processCooler(coolerItem, isCold)
     local id = coolerId(coolerItem)
     local md = coolerItem:getModData()
     local now = CF.worldHours()
-    local last = md.cfLast
-    md.cfLast = now
+    local last = md.tcLast
+    md.tcLast = now
 
     local contents = {}
     local list = inventory:getItems()
@@ -339,7 +360,7 @@ function CF.processCooler(coolerItem, isCold)
     for _, item in ipairs(contents) do
         local power = CF.icePower(item)
         if power then
-            item:getModData().cfLast = now -- so it does not melt twice once taken out
+            item:getModData().tcLast = now -- so it does not melt twice once taken out
             local charge = CF.getCharge(item)
             if charge > 0 then
                 CF.chill(item, CF.ICE_HEAT)
@@ -384,7 +405,7 @@ function CF.processCooler(coolerItem, isCold)
         consumeIce(iceItems, covered * meltPerHour)
     end
 
-    local factor = coverage * CF.opt("CoolFactor", 0.25) + (1.0 - coverage)
+    local factor = coverage * CF.coolFactor() + (1.0 - coverage)
     local rotSpeed = CF.foodRotSpeed()
     -- Partly melted ice reads as a partial chill rather than snapping back to warm.
     local chillTarget = 1.0 - coverage * (1.0 - CF.COOLER_HEAT)

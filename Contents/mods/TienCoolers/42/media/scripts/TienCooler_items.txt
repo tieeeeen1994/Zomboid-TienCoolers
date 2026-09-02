@@ -1,14 +1,14 @@
-module CoolerFridge
+module TienCoolers
 {
     imports
     {
         Base
     }
 
-    model CFIceBag_Ground
+    model TienCoolerIceBag_Ground
     {
         mesh = WorldItems/Clothing/PlasticBag_Ground,
-        texture = WorldItems/CFIceBag,
+        texture = WorldItems/TienCoolerIceBag,
         scale = 0.4,
     }
 
@@ -19,8 +19,8 @@ module CoolerFridge
         Weight = 1.6,
         UseDelta = 0.02,
         UseWhileEquipped = false,
-        Icon = CFIceBag,
-        WorldStaticModel = CFIceBag_Ground,
-        Tooltip = Tooltip_CFIceBag,
+        Icon = TienCoolerIceBag,
+        WorldStaticModel = TienCoolerIceBag_Ground,
+        Tooltip = Tooltip_TienCoolerIceBag,
     }
 }

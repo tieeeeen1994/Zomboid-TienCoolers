@@ -1,102 +1,42 @@
-# Cooler Fridge
+# Tien's Coolers
 
-A Project Zomboid **Build 42** mod. Pack a cooler with ice and the food inside keeps four
-times as long, wherever you carry it.
+A cooler packed with ice keeps the food inside it fresh four times longer, anywhere you carry
+it. No power and no refrigerator are required.
 
-## How it works
+Coolers already exist in Project Zomboid, but they do nothing for the food they hold. This mod
+gives them their intended purpose and adds the ice to fill them with.
 
-Build 42 slows food rot in exactly one place — `Food.updateAge()` checks whether the item's
-outermost container is a fridge or freezer whose *parent world object* sits on a square with
-electricity:
+## What the mod adds
 
-```java
-} else if (this.isInFridge(cont) || this.isInFreezer(cont)) {
-    if (cont.getSourceGrid() != null && cont.getSourceGrid().haveElectricity()) {
-        delta *= this.getFridgeFactor();
-    }
-```
+- **Bag of Ice.** A new item. It is found in shop display freezers and in household and garage
+  chest freezers, and it can also be made at home.
+- **Cooling.** Put a bag of ice in any cooler, including the Beer, Meat, Soda and Seafood
+  coolers, and the food inside rots at a quarter of the usual rate. The cooler is labelled
+  *(Iced)* for as long as the ice lasts, and the chilled items are tinted blue in the
+  inventory window in the same way as food in a working refrigerator.
+- **Melting.** A full bag lasts about two days inside a cooler and melts roughly five times
+  faster outside one. Hot weather shortens it further. How much ice is left is shown on the
+  bag itself.
+- **Freezing water.** Right-click a container of water inside a powered refrigerator or
+  freezer and choose *Freeze Into Ice*. Six hours later the water has become a bag of ice. A
+  bag that has melted refills itself if it is left in a powered freezer.
+- **Cold Packs.** The vanilla Cold Pack chills a cooler as well, at 40 percent of the strength
+  of a bag of ice.
 
-A cooler carried in your inventory has no parent object and no source grid, so there is no
-vanilla hook to hang portable cooling on — marking the cooler's container as a fridge does
-nothing. Setting `ItemContainer.setCustomTemperature()` does not help either, because
-`getOutermostContainer()` walks past the cooler up to the player's inventory.
+## Sandbox options
 
-So the mod measures instead of predicting. Each pass it records `item:getAge()` in modData,
-and on the next pass hands back part of the ageing the game applied in between:
+Nine settings are available on the **Tien's Coolers** sandbox page: cooling strength, ice
+lifetime, melting speed outside a cooler, freezing time, the water needed per bag, cold pack
+support, freezer loot, the blue tint on chilled items and the *(Iced)* label.
 
-```lua
-local aged = age - prev
-local cap  = dt * rotSpeed / 24.0      -- most that could have happened in the cooler
-local cooled = math.min(aged, cap)
-item:setAge(prev + (aged - cooled) + cooled * factor)
-```
+The mod also follows the vanilla Food Rot Speed and Refrigeration Effectiveness settings, and
+a cooler is never allowed to preserve food better than a powered refrigerator does.
 
-That produces exactly the same result as a slower rot rate, needs no per-tick presence, and
-self-corrects across unloaded chunks and long absences — the game catches the item up when
-it reloads, and the next pass rebates the right share of it.
+## Compatibility
 
-### The blue tint
+Build 42 only. The mod can be added to an existing save. Multiplayer is supported, and a
+dedicated server needs no additional setup beyond having the mod installed.
 
-`ISInventoryPane` tints an item's row blue whenever `getHeat() < 1`, at the strength of
-`Food.getInvHeat()` = `1 - (heat - 0.2) / 0.8`. A powered fridge produces that by returning
-`0.2` from `ItemContainer.getTemprature()`, which `Food.updateAge()` lerps the item's heat
-towards — but again only via `getOutermostContainer()`, which walks past a carried cooler.
-
-So the mod clamps `setHeat()` directly: `0.2` for ice (matching a freezer, full-strength
-blue) and `0.35` for the cooler's contents, scaled by how much of the interval the ice
-actually covered. It only ever pulls heat *down*, so something straight out of a freezer is
-not warmed up, and once the ice is gone the mod stops touching heat and vanilla thaws the
-food on its own.
-
-### Why the food is not renamed
-
-`Food.getName()` composes the display name in Java from item state — the parts are joined
-with `", "` and formatted through `IGUI_FoodNaming` (`"%2 (%1)"`), giving `Steak (Frozen)` or
-`Steak (Cooked, Frozen)`. That `(Frozen)` is gated on `isFrozen()`, which only accrues in a
-*powered freezer*; food in a working fridge gets the blue tint and no suffix at all.
-
-A cooler is a fridge, not a freezer, so the mod follows the same convention: contents are
-tinted, never renamed. It also avoids writing to each food item's stored `name`, which would
-survive uninstalling the mod. Only the cooler bag itself is labelled `(Iced)`, and that label
-is stripped again when the ice runs out or the sandbox option is switched off.
-
-## Layout
-
-```
-Contents/mods/CoolerFridge/42/
-  mod.info, icon.png, poster.png
-  media/
-    sandbox-options.txt                       sandbox page + 9 options
-    scripts/CoolerFridge_items.txt            IceBag item + its ground model
-    textures/Item_CFIceBag.png                32x32 inventory icon
-    textures/WorldItems/CFIceBag.png          256x256 world model texture
-    lua/shared/CoolerFridge/                  cooling, melting and freezing logic
-    lua/client/CoolerFridge/                  event driver + context menu
-    lua/server/CoolerFridge/                  freezer loot
-    lua/shared/Translate/EN/                  ItemName / Tooltip / ContextMenu / IG_UI / Sandbox
-```
-
-Everything runs client side, on the containers a player is carrying or currently looking at
-(`EveryOneMinute` plus `OnRefreshInventoryWindowContainers`). State lives in item modData and
-in the drainable's used-delta, both of which the client already owns and transmits, so a
-dedicated server needs nothing extra and no correction is ever applied twice.
-
-## Extending
-
-Other mods can register their own gear:
-
-```lua
-CoolerFridge.CoolerBags["MyMod.BigCooler"] = true
-CoolerFridge.IceSources["MyMod.IcePack"] = 0.6   -- 1.0 == one full bag of ice
-```
-
-## Art
-
-All art is generated by `scripts/make_art.py` (icon, world texture, mod icon, poster and the
-Workshop preview). Re-run it after editing that script to regenerate every asset.
-
-## Development
-
-`scripts/sim.lua` stubs out the parts of the PZ API the shared module touches and asserts the
-cooling, melting, refreezing, water-to-ice, chill and labelling behaviour — 20 checks. Run
-it with any Lua 5.4 host, or with `lupa` from Python.
+Other mods can register their own coolers and cold sources. The
+[implementation notes](docs/implementation.md) explain how, along with the rest of the
+mod's internals.
