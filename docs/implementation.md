@@ -106,6 +106,21 @@ Three things drive a pass, and the order matters:
 | `EveryOneMinute` -> a sweep of the squares around the player | fridges, freezers, crates, car trunks, anything set down on the floor |
 | `OnRefreshInventoryWindowContainers` | whatever the loot window just rebuilt, so opening a container shows it up to date at once |
 
+The sweep is deliberately cheap, because `EveryOneMinute` is an *in-game* minute - about
+two and a half real seconds at the default day length, less on a short one. Three things
+keep it that way, and all three matter:
+
+- it runs on a **real** clock of its own (`SWEEP_MS`, ten seconds), not on the event that
+  triggers it;
+- the radius is **1**, the same reach the player has;
+- a pass reports whether it found anything of this mod's (`CF.processTopLevel` returns
+  it), and a client only nudges the server about containers where it did. Otherwise every
+  cupboard, counter and shelf in the room costs a packet and a full server-side pass every
+  ten seconds - which is a mod making a room stutter, not a mod keeping ice cold.
+
+None of this changes the outcome, only when the work happens: a container missed while
+the player was away settles the whole gap on the next sweep that reaches it.
+
 The square sweep is the one that matters for world containers, and it exists because
 hanging that job off the loot window alone did not work. `ISInventoryPage.backpacks` is a
 UI artefact: it is wiped and rebuilt from whatever that window happens to be showing, so a
@@ -145,7 +160,18 @@ two of the item:
 
 A client that sees water finish freezing in a base freezer therefore leaves the flag set
 and makes nothing; the server does it, and the new bag arrives by the ordinary container
-packets. Clients nudge the server every ten seconds per container they do not own
+packets. What does **not** arrive by itself is everything the server changed on an item
+that was already there, so each of those is pushed by hand:
+
+| what changed | pushed by | why it has to be |
+| --- | --- | --- |
+| water drawn out of a jug to make a bag | `CF.syncFluid` -> `sendItemStats` | the packet carries the fluid container; without it a client draws a full bucket until something makes it re-read the item, and picking it up reveals it was empty all along |
+| the freezing mark, set or cleared | `CF.syncModData` -> `syncItemModData` | modData does not ride along with a streamed item |
+| the mark, while the water is still waiting | the same, once per pass | a client that walked out of range and back has a *fresh* copy with no modData on it. Nothing changed, so no change can announce it; the owner simply says it again |
+
+That last one is why the menu is right after a walk. It also protects the wait: a client
+working from a copy that had not heard yet offers *Freeze Into Ice*, and `onSetFreezing`
+answers a repeat ask with the current state rather than restarting the clock. Clients nudge the server every ten seconds per container they do not own
 (`sendClientCommand` -> `CF.processAddress`) so the copy that gets saved keeps up and those
 transfers happen. That nudge is a background correctness job, not what the player is
 watching: if it never arrives, the screen is still right and only the saved state lags.

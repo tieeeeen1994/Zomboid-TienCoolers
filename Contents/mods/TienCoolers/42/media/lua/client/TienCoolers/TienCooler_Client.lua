@@ -1,8 +1,8 @@
 --[[
     Tien's Coolers - client driver.
 
-    This ticks every container near the player, once a minute, and whenever the loot
-    window rebuilds. Not only the ones this machine owns: a pass is worked out from a
+    This ticks every container near the player, on a slow real-time clock, and whenever
+    the loot window rebuilds. Not only the ones this machine owns: a pass is worked out from a
     timestamp on the item, so this client and the server each apply the same elapsed
     time to their own copy and agree without talking, exactly as vanilla does with food
     rot. That is what makes a cooler on the floor cool live on screen.
@@ -29,6 +29,23 @@ local REQUEST_MS = 10000
 local requested = {}
 local requestCount = 0
 
+-- Entries are dropped once they are older than the window they enforce, so the table
+-- stays the size of "containers seen in the last ten seconds". Emptying it wholesale
+-- instead - which is what this used to do once it passed a few hundred keys - lets
+-- every container in range go again at once, and in a furnished room that is a burst of
+-- packets and a burst of server-side passes every time the count rolls over.
+local function prune(now)
+    local kept = 0
+    for key, when in pairs(requested) do
+        if now - when >= REQUEST_MS then
+            requested[key] = nil
+        else
+            kept = kept + 1
+        end
+    end
+    requestCount = kept
+end
+
 local function addressKey(address)
     if address.v then return "v" .. address.v .. ":" .. address.p end
     if address.g then return "g" .. address.g end
@@ -43,10 +60,7 @@ local function request(player, address, item)
     local last = requested[key]
     if last and now - last < REQUEST_MS then return true end
 
-    if requestCount > 256 then
-        requested = {}
-        requestCount = 0
-    end
+    if requestCount > 256 then prune(now) end
     requested[key] = now
     requestCount = requestCount + 1
 
@@ -75,9 +89,15 @@ end
 local function process(player, inventory)
     if not inventory then return "empty" end
 
-    CF.processTopLevel(inventory)
+    local work = CF.processTopLevel(inventory)
 
     if not player or CF.ownsContainer(inventory) then return "mine" end
+
+    -- Nothing in here for this mod, so nothing for the server to do about it either.
+    -- Without this every cupboard, counter and shelf within reach costs a packet and a
+    -- full pass on the server, ten seconds apart, forever.
+    if not work then return "ticked, nothing to nudge" end
+
     if request(player, CF.addressContainer(inventory), inventory:getContainingItem()) then
         return "ticked, server nudged"
     end
@@ -99,11 +119,18 @@ end
 
 --[[ The square sweep ]]
 
--- How far from the player, in squares, world containers are ticked. A pass is worked
--- out from a timestamp, so a container missed while the player was away catches up in
--- full the moment they come back within this radius: the radius decides when the work
--- happens, never how much of it happens.
-local SWEEP_RADIUS = 2
+-- How far from the player, in squares, world containers are ticked, and how often in
+-- real time. A pass is worked out from a timestamp, so a container missed while the
+-- player was away catches up in full the moment they come back within reach: these two
+-- decide when the work happens, never how much of it happens. Keep them modest.
+--
+-- EveryOneMinute is an *in-game* minute, which at the default day length is about two
+-- and a half seconds of real time - roughly twenty-four sweeps a real minute, and more
+-- on a short day length. Sweeping every one of those is what turns a cheap idea into a
+-- stutter, so the sweep runs on a real clock of its own.
+local SWEEP_RADIUS = 1
+local SWEEP_MS = 10000
+local lastSweep = {}   -- by player number, so split screen is not one player's turn
 
 -- Everything on one square: containers standing on it (a fridge has two, the fridge
 -- and the freezer, and both need their own pass) and items dropped on it.
@@ -144,7 +171,12 @@ local function sweepSquare(player, square, seen, tally)
     end
 end
 
-local function sweepNearby(player)
+local function sweepNearby(playerNum, player)
+    local now = getTimestampMs()
+    local last = lastSweep[playerNum]
+    if last and now - last < SWEEP_MS then return end
+    lastSweep[playerNum] = now
+
     local square = player:getCurrentSquare()
     local cell = getCell()
     if not (square and cell) then return end
@@ -209,7 +241,7 @@ local function onEveryOneMinute()
         if player then
             if playerNum == 0 then checkServerVersion(player) end
             CF.processTopLevel(player:getInventory())
-            sweepNearby(player)
+            sweepNearby(playerNum, player)
 
             local loot = getPlayerLoot(playerNum)
             if loot and loot.backpacks then

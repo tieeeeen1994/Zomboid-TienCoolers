@@ -560,6 +560,16 @@ net.ms = 0
 net.packets = {}
 net.loot = { backpacks = { { inventory = fridge } } }
 local everyMinute = handlers.EveryOneMinute
+
+-- A fridge with nothing of ours in it is still walked, and still says nothing: the
+-- server has no work to do about a cupboard full of tinned beans, and asking it to look
+-- at every container within reach every ten seconds is how a mod makes a room stutter.
+everyMinute()
+passed = reportStr("an empty fridge is not handed to the server", net.sent("command:tick"), 0) and passed
+
+fridge:AddItem("TienCoolers.IceBag")
+net.ms = net.ms + 60000
+net.packets = {}
 everyMinute()
 passed = reportStr("the fridge is handed to the server", net.sent("command:tick"), 1) and passed
 passed = reportStr("no version check while tracing is off", net.sent("command:version"), 0) and passed
@@ -571,7 +581,7 @@ passed = reportStr("the client asks the server which build it is running",
 CF.DEBUG = false
 everyMinute()
 passed = reportStr("a repeat inside the window is dropped", net.sent("command:tick"), 1) and passed
-net.ms = 60000
+net.ms = net.ms + 60000
 everyMinute()
 passed = reportStr("and it goes again once the window passes", net.sent("command:tick"), 2) and passed
 
@@ -873,7 +883,11 @@ net.loot = { backpacks = {} }
 SandboxVars.TienCoolers.FreezeHours = 7.0
 SandboxVars.TienCoolers.WaterPerBag = 5.0
 
-local function newWaterHolder(amount)
+-- Comfortably past the sweep's own real-time interval. EveryOneMinute is an in-game
+-- minute and fires far too often to sweep on, so the sweep keeps its own clock.
+local SWEEP_GAP = 30000
+
+function newWaterHolder(amount)
     local item = newItem("Base.BucketWood", { InventoryItem = true })
     item.amount = amount
     item.fluid = {
@@ -890,11 +904,13 @@ sweptFreezer:add(sweptWater)
 CF.startFreezingWater(sweptWater)
 
 me:setCurrentSquare(squareAt(201, 201, 0))
+net.ms = net.ms + SWEEP_GAP
 handlers.EveryOneMinute()
 clock.hours = 8
+net.ms = net.ms + SWEEP_GAP
 handlers.EveryOneMinute()
 
-local function bagsIn(container)
+function bagsIn(container)
     local n = 0
     for _, it in ipairs(container.list) do
         if it:getFullType() == "TienCoolers.IceBag" then n = n + 1 end
@@ -915,11 +931,13 @@ CF.startFreezingWater(farWater)
 
 me:setCurrentSquare(squareAt(310, 310, 0))
 clock.hours = 30
+net.ms = net.ms + SWEEP_GAP
 handlers.EveryOneMinute()
 passed = reportStr("a freezer out of range is left alone", bagsIn(farFreezer), 0) and passed
 passed = reportStr("  and keeps its mark rather than losing it", CF.isFreezingWater(farWater), true) and passed
 
 me:setCurrentSquare(squareAt(301, 300, 0))
+net.ms = net.ms + SWEEP_GAP
 handlers.EveryOneMinute()
 passed = reportStr("  so walking back settles the whole gap at once", bagsIn(farFreezer), 2) and passed
 
@@ -930,9 +948,110 @@ local sweptCooler = newBag("Base.Cooler")
 local sweptIce = sweptCooler.inventory:AddItem("TienCoolers.IceBag")
 dropOnGround(sweptCooler, 200, 199, 0)
 me:setCurrentSquare(squareAt(201, 200, 0))
+net.ms = net.ms + SWEEP_GAP
 handlers.EveryOneMinute()
 clock.hours = 24
+net.ms = net.ms + SWEEP_GAP
 handlers.EveryOneMinute()
 passed = report("the sweep melts ice in a cooler on the ground", sweptIce.delta, 0.5) and passed
+
+-- Keeping the other machines in step. Everything this mod changes on an item it does
+-- not own has to be pushed, or a client goes on drawing state that stopped being true:
+-- a bucket that reads full until you pick it up, water offered "Freeze Into Ice" while
+-- it is already freezing.
+clock.hours = 0
+net.client = false
+net.packets = {}
+net.loot = { backpacks = {} }
+SandboxVars.TienCoolers.FreezeHours = 7.0
+SandboxVars.TienCoolers.WaterPerBag = 5.0
+
+local syncFreezer = newWorldContainer(400, 400, 0, "freezer", true)
+local syncWater = newWaterHolder(10.0)
+syncFreezer:add(syncWater)
+
+CF.startFreezingWater(syncWater)
+passed = reportStr("marking water is transmitted", net.sent("moddata:Base.BucketWood"), 1) and passed
+
+-- Still waiting. The mark is re-asserted so a client that walked out of range and back,
+-- and so has a freshly streamed copy with no modData on it, learns of it again.
+net.packets = {}
+CF.processTopLevel(syncFreezer)
+passed = reportStr("water still waiting says so again", net.sent("moddata:Base.BucketWood"), 1) and passed
+
+-- The water actually going into the ice has to travel too.
+net.packets = {}
+clock.hours = 8
+CF.processTopLevel(syncFreezer)
+passed = report("the water is gone", syncWater.amount, 0.0) and passed
+passed = reportStr("and the new level is transmitted", net.sent("stats:Base.BucketWood"), 1) and passed
+passed = reportStr("as is the mark being cleared", net.sent("moddata:Base.BucketWood"), 1) and passed
+
+-- A partly drawn container keeps its mark, and its new level goes out just the same.
+clock.hours = 0
+net.packets = {}
+local partFreezer = newWorldContainer(410, 410, 0, "freezer", true)
+local partWater = newWaterHolder(8.0)
+partFreezer:add(partWater)
+CF.startFreezingWater(partWater)
+CF.processTopLevel(partFreezer)
+clock.hours = 8
+net.packets = {}
+CF.processTopLevel(partFreezer)
+passed = report("a partly drawn container keeps the remainder", partWater.amount, 3.0) and passed
+passed = reportStr("  and transmits it", net.sent("stats:Base.BucketWood"), 1) and passed
+passed = reportStr("  and stays marked", CF.isFreezingWater(partWater), true) and passed
+
+-- A client whose copy had not heard yet asks again. Answer it; do not restart its wait.
+local reFreezer = newWorldContainer(420, 420, 0, "freezer", true)
+local reWater = newWaterHolder(10.0)
+reFreezer:add(reWater)
+clock.hours = 20
+CF.startFreezingWater(reWater)
+local markedAt = reWater.md.tcFreezeStart
+
+clock.hours = 24
+local reAddress = CF.addressContainer(reFreezer)
+reAddress.item = reWater:getID()
+reAddress.on = true
+net.packets = {}
+handlers.OnClientCommand("TienCoolers", "setFreezing", me, reAddress)
+passed = report("asking twice does not restart the wait", reWater.md.tcFreezeStart, markedAt) and passed
+passed = reportStr("  and the asker is told where it stands", net.sent("moddata:Base.BucketWood"), 1) and passed
+
+-- The sweep's own clock. EveryOneMinute is an in-game minute - a couple of real seconds
+-- at the default day length - so sweeping on every one of them walks every container in
+-- reach dozens of times a real minute. It is meant to be idempotent, not free.
+clock.hours = 0
+net.client = false
+net.packets = {}
+net.loot = { backpacks = {} }
+
+local throttleFreezer = newWorldContainer(500, 500, 0, "freezer", true)
+local throttleWater = newWaterHolder(10.0)
+throttleFreezer:add(throttleWater)
+me:setCurrentSquare(squareAt(500, 501, 0))
+net.ms = net.ms + SWEEP_GAP
+handlers.EveryOneMinute()
+CF.startFreezingWater(throttleWater)
+
+clock.hours = 8
+handlers.EveryOneMinute()          -- same real moment, so no sweep and no ice
+passed = reportStr("a second sweep in the same real moment is skipped", bagsIn(throttleFreezer), 0) and passed
+
+net.ms = net.ms + SWEEP_GAP
+handlers.EveryOneMinute()
+passed = reportStr("  and the next one past the interval does the lot", bagsIn(throttleFreezer), 2) and passed
+
+-- Containers with nothing of this mod's in them cost the server nothing.
+net.client = true
+net.ms = net.ms + SWEEP_GAP
+net.packets = {}
+local dullShelf = newWorldContainer(510, 510, 0, "shelves", false)
+dullShelf:add(newItem("Base.Plank", { InventoryItem = true }))
+me:setCurrentSquare(squareAt(510, 511, 0))
+handlers.EveryOneMinute()
+passed = reportStr("a shelf of junk is never handed to the server", net.sent("command:tick"), 0) and passed
+net.client = false
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

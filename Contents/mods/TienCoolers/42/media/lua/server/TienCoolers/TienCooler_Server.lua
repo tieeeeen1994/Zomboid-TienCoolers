@@ -16,18 +16,22 @@ require "TienCoolers/TienCooler_Shared"
 
 local CF = TienCoolers
 
-local function onSetFreezing(container, args, player)
+-- CF.startFreezingWater and CF.stopFreezingWater push the flag out themselves, so the
+-- client that asked - and anyone else looking - sees it on its own copy and is offered
+-- "Stop Freezing Into Ice" instead of "Freeze Into Ice".
+local function onSetFreezing(container, args)
     local item = container:getItemWithID(args.item)
     if not item then return end
 
-    if args.on then
-        CF.startFreezingWater(item)
-    else
+    if not args.on then
         CF.stopFreezingWater(item)
+    elseif CF.isFreezingWater(item) then
+        -- Already going. Asking again is a client working from a copy that had not heard
+        -- yet, so answer it rather than restarting the clock and costing it the wait.
+        CF.syncModData(item)
+    else
+        CF.startFreezingWater(item)
     end
-    -- So the client that asked (and anyone else looking) sees the flag on its own copy
-    -- and offers "Cancel Freezing" instead of "Freeze Into Ice".
-    syncItemModData(player, item)
 end
 
 local function onClientCommand(module, command, player, args)
@@ -40,7 +44,7 @@ local function onClientCommand(module, command, player, args)
             player and player:getUsername() or "?", CF.processAddress(args))
     elseif command == "setFreezing" then
         local container = CF.resolveContainer(args)
-        if container then onSetFreezing(container, args, player) end
+        if container then onSetFreezing(container, args) end
     elseif command == "version" then
         sendServerCommand(player, "TienCoolers", "version", { v = CF.VERSION })
     end

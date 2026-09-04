@@ -16,7 +16,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.2.1"
+CF.VERSION = "1.2.3"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -204,6 +204,15 @@ end
 
 -- A drainable's remaining charge rides along with the item's stats.
 function CF.syncCharge(item)
+    sendItemStats(item)
+end
+
+-- So does what is left in a fluid container, which is how the vanilla fill and empty
+-- actions push a jug's new level out. Without this the water drawn off to make ice
+-- disappears only on the machine that did the drawing: every other client keeps drawing
+-- a full bucket until something else makes it re-read the item, and picking it up then
+-- reveals it was empty all along.
+function CF.syncFluid(item)
     sendItemStats(item)
 end
 
@@ -458,16 +467,22 @@ function CF.isFreezingWater(item)
     return item:getModData().tcFreezing == true
 end
 
+-- The mark is the one piece of this mod's state a player can see in a menu, so it has
+-- to reach the other machines. CF.syncModData is server-only, so on a client these are
+-- purely local and the flag travels by the setFreezing command instead (see
+-- TienCooler_Client.lua); on the server it goes straight out to everyone nearby.
 function CF.startFreezingWater(item)
     local md = item:getModData()
     md.tcFreezing = true
     md.tcFreezeStart = CF.worldHours()
+    CF.syncModData(item)
 end
 
 function CF.stopFreezingWater(item)
     local md = item:getModData()
     md.tcFreezing = nil
     md.tcFreezeStart = nil
+    CF.syncModData(item)
 end
 
 -- Called for every item in a powered fridge/freezer. Water marked for freezing turns
@@ -516,6 +531,14 @@ function CF.processFreezing(inventory, isCold)
                     pool = pool + amount
                 elseif not fluid then
                     CF.stopFreezingWater(item)      -- nothing to freeze in there
+                else
+                    -- Still waiting. Say so again: a client that walked out of range and
+                    -- back has a freshly streamed copy of this item, and modData does not
+                    -- ride along with one, so without this its menu offers "Freeze Into
+                    -- Ice" on water that is already freezing - and taking that offer
+                    -- restarts the clock. Server-only, and only for water actually
+                    -- waiting, so it costs nothing anywhere else.
+                    CF.syncModData(item)
                 end
             end
         end
@@ -540,11 +563,13 @@ function CF.processFreezing(inventory, isCold)
         if owed <= 0 then break end
         local taken = entry.amount < owed and entry.amount or owed
         entry.fluid:removeFluid(taken)
+        CF.syncFluid(entry.item)
         owed = owed - taken
         if entry.amount - taken <= 0.0001 then
             CF.stopFreezingWater(entry.item)
         else
             entry.item:getModData().tcFreezeStart = now   -- the next bag takes as long
+            CF.syncModData(entry.item)
         end
     end
 
@@ -693,6 +718,17 @@ end
 
 --[[ Traversal ]]
 
+-- Whether the pass currently running found anything this mod owns work for: a cooler, a
+-- cold source, or water marked to freeze. A client uses it to decide whether the server
+-- is worth nudging about a container, which is the difference between a packet for every
+-- shelf, counter and cupboard in the room and a packet for the one that matters. The
+-- walk visits all of it anyway, so this costs an increment.
+local passWork = 0
+
+local function noteWork()
+    passWork = passWork + 1
+end
+
 -- Walk a container, cooling what needs cooling and melting what needs melting.
 function CF.processContainer(inventory, isCold, depth)
     if not inventory then return end
@@ -717,10 +753,13 @@ end
 -- food inside it never gets its rot rebated.
 function CF.processItem(item, isCold, depth)
     if CF.isCoolerBag(item) then
+        noteWork()
         CF.processCooler(item, isCold)
     elseif CF.icePower(item) then
+        noteWork()
         CF.tickIce(item, isCold)
     else
+        if item:getModData().tcFreezing then noteWork() end
         CF.tickFreezing(item, isCold)
         -- getInventory() only exists on InventoryContainer; asking a plain item
         -- (an equipped belt, say) for one is an error, not a nil.
@@ -733,8 +772,10 @@ function CF.processItem(item, isCold, depth)
     end
 end
 
+-- Returns whether the pass found anything worth another machine's attention.
 function CF.processTopLevel(inventory)
-    if not inventory then return end
+    if not inventory then return false end
+    passWork = 0
 
     -- The loot window gives a cooler bag its own container button, so this can be
     -- handed the inside of a cooler. Walking that as an ordinary container would melt
@@ -744,10 +785,11 @@ function CF.processTopLevel(inventory)
     if held and CF.isCoolerBag(held) then
         local outer = held:getContainer()
         CF.processItem(held, outer ~= nil and containerIsCold(outer) or false, 0)
-        return
+        return passWork > 0
     end
 
     CF.processContainer(inventory, containerIsCold(inventory), 0)
+    return passWork > 0
 end
 
 -- What one machine can see of an item, so a client's view and the server's can be laid
