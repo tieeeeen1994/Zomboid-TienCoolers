@@ -24,4 +24,4 @@ description=Build 42 only. The mod can be added to an existing save. Multiplayer
 description=
 description=Other mods can register their own coolers and cold sources.
 tags=Build 42;Balance;Items;Realistic
-visibility=unlisted
+visibility=public

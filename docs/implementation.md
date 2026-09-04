@@ -96,8 +96,26 @@ Contents/mods/TienCoolers/42/
 ```
 
 The logic itself lives in `shared` and runs on whichever machine owns the container it is
-looking at, driven by `EveryOneMinute` and `OnRefreshInventoryWindowContainers`. State lives
-in item modData and in the drainable's used-delta.
+looking at. State lives in item modData and in the drainable's used-delta.
+
+Three things drive a pass, and the order matters:
+
+| driver | what it reaches |
+| --- | --- |
+| `EveryOneMinute` -> the player's own inventory | coolers and ice you are carrying |
+| `EveryOneMinute` -> a sweep of the squares around the player | fridges, freezers, crates, car trunks, anything set down on the floor |
+| `OnRefreshInventoryWindowContainers` | whatever the loot window just rebuilt, so opening a container shows it up to date at once |
+
+The square sweep is the one that matters for world containers, and it exists because
+hanging that job off the loot window alone did not work. `ISInventoryPage.backpacks` is a
+UI artefact: it is wiped and rebuilt from whatever that window happens to be showing, so a
+freezer could go days without a single pass, and water marked to freeze in one sat there
+for good. The sweep asks `getCell():getGridSquare` for the squares within
+`SWEEP_RADIUS`, walks `getObjects()` for containers standing on them (a fridge has two,
+the fridge and the freezer, and each needs its own pass) and `getWorldObjects()` for items
+dropped on them. Because a pass is worked out from a timestamp, the radius decides *when*
+the work happens and never *how much* of it happens: a freezer missed while the player was
+away settles the entire gap the moment they walk back within it.
 
 ## Multiplayer
 

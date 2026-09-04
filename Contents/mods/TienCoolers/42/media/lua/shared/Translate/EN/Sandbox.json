@@ -17,7 +17,7 @@
     "Sandbox_TienCoolers_WaterPerBag_tooltip": "Units of water consumed per bag of ice produced. Water pools across every container set to freeze in the same fridge, so several small ones can add up to a bag. For scale, a bottle holds 1 unit and a bucket 10.",
 
     "Sandbox_TienCoolers_UseColdpacks": "Cold Packs Work as Ice",
-    "Sandbox_TienCoolers_UseColdpacks_tooltip": "Lets the vanilla Cold Pack chill a cooler too, at 40% the strength of a bag of ice.",
+    "Sandbox_TienCoolers_UseColdpacks_tooltip": "Lets the vanilla Cold Pack chill a cooler too, at 40%% the strength of a bag of ice.",
 
     "Sandbox_TienCoolers_SpawnIceInLoot": "Spawn Ice in Freezers",
     "Sandbox_TienCoolers_SpawnIceInLoot_tooltip": "Adds bags of ice to freezer loot. Turn off to make freezing your own water the only source.",

@@ -38,6 +38,11 @@ function isServer() return false end
 function getTimestampMs() return net.ms or 0 end
 function getSpecificPlayer(num) return net.players[num] end
 function getSquare(x, y, z) return net.squares[x .. "," .. y .. "," .. z] end
+-- The square sweep asks the cell for its neighbours rather than the loot window for
+-- its buttons, so the harness has to be able to answer that too.
+function getCell()
+    return { getGridSquare = function(_, x, y, z) return getSquare(x, y, z) end }
+end
 function getVehicleById(id) return net.vehicles[id] end
 
 function sendItemStats(item) net.log("stats:%s", item:getFullType()) end
@@ -128,6 +133,8 @@ function newPlayer(num, isLocal)
     player.inventory = newContainer("bag")
     player.inventory.parent = player
     function player:isLocalPlayer() return isLocal end
+    function player:getCurrentSquare() return self.square end
+    function player:setCurrentSquare(square) self.square = square end
     function player:getUsername() return "player" .. num end
     function player:getInventory() return self.inventory end
     net.players[num] = player
@@ -136,7 +143,7 @@ end
 
 -- A container standing in the world, the way a fridge or a crate does. The server
 -- looks these up again by square and index, so the stub has to be indexable too.
-local function squareAt(x, y, z)
+function squareAt(x, y, z)
     local key = x .. "," .. y .. "," .. z
     local square = net.squares[key]
     if not square then
@@ -191,6 +198,7 @@ function newWorldContainer(x, y, z, kind, powered)
         return -1
     end
     function object:getContainerByIndex(i) return self.containers[i + 1] end
+    function object:getContainerCount() return #self.containers end
 
     table.insert(square.objects, object)
     container.parent = object
@@ -853,5 +861,78 @@ local resolved = pcall(function()
     handlers.OnClientCommand("TienCoolers", "tick", me, { x = 99, y = 99, z = 0, o = 0, c = 0 })
 end)
 passed = reportStr("a stale request is a no-op, not an error", resolved, true) and passed
+
+-- The square sweep. This is what actually reaches a fridge or a freezer: the loot
+-- window's container list is wiped and rebuilt from whatever that window happens to be
+-- showing, so hanging the only pass off it left water marked in a freezer sitting there
+-- untouched. The sweep is given an empty loot window here on purpose - everything below
+-- has to happen without one.
+clock.hours = 0
+net.client = false
+net.loot = { backpacks = {} }
+SandboxVars.TienCoolers.FreezeHours = 7.0
+SandboxVars.TienCoolers.WaterPerBag = 5.0
+
+local function newWaterHolder(amount)
+    local item = newItem("Base.BucketWood", { InventoryItem = true })
+    item.amount = amount
+    item.fluid = {
+        getAmount = function() return item.amount end,
+        contains = function() return true end,
+        removeFluid = function(_, v) item.amount = item.amount - v end,
+    }
+    return item
+end
+
+local sweptFreezer = newWorldContainer(200, 200, 0, "freezer", true)
+local sweptWater = newWaterHolder(10.0)
+sweptFreezer:add(sweptWater)
+CF.startFreezingWater(sweptWater)
+
+me:setCurrentSquare(squareAt(201, 201, 0))
+handlers.EveryOneMinute()
+clock.hours = 8
+handlers.EveryOneMinute()
+
+local function bagsIn(container)
+    local n = 0
+    for _, it in ipairs(container.list) do
+        if it:getFullType() == "TienCoolers.IceBag" then n = n + 1 end
+    end
+    return n
+end
+
+passed = reportStr("the sweep freezes water with no loot window at all", bagsIn(sweptFreezer), 2) and passed
+passed = report("  and takes the water it paid for", sweptWater.amount, 0.0) and passed
+
+-- Out of range is a delay, never a loss: the timestamp stays on the item, so the whole
+-- gap is settled the moment the player walks back.
+clock.hours = 0
+local farFreezer = newWorldContainer(300, 300, 0, "freezer", true)
+local farWater = newWaterHolder(10.0)
+farFreezer:add(farWater)
+CF.startFreezingWater(farWater)
+
+me:setCurrentSquare(squareAt(310, 310, 0))
+clock.hours = 30
+handlers.EveryOneMinute()
+passed = reportStr("a freezer out of range is left alone", bagsIn(farFreezer), 0) and passed
+passed = reportStr("  and keeps its mark rather than losing it", CF.isFreezingWater(farWater), true) and passed
+
+me:setCurrentSquare(squareAt(301, 300, 0))
+handlers.EveryOneMinute()
+passed = reportStr("  so walking back settles the whole gap at once", bagsIn(farFreezer), 2) and passed
+
+-- A cooler set down on the floor is a world object, not something inside a container,
+-- so the sweep has to look at a square's dropped items as well as its containers.
+clock.hours = 0
+local sweptCooler = newBag("Base.Cooler")
+local sweptIce = sweptCooler.inventory:AddItem("TienCoolers.IceBag")
+dropOnGround(sweptCooler, 200, 199, 0)
+me:setCurrentSquare(squareAt(201, 200, 0))
+handlers.EveryOneMinute()
+clock.hours = 24
+handlers.EveryOneMinute()
+passed = report("the sweep melts ice in a cooler on the ground", sweptIce.delta, 0.5) and passed
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

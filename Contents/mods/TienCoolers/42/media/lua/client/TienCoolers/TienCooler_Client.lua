@@ -1,11 +1,17 @@
 --[[
     Tien's Coolers - client driver.
 
-    This ticks every container the player can see, once a minute and whenever the loot
+    This ticks every container near the player, once a minute, and whenever the loot
     window rebuilds. Not only the ones this machine owns: a pass is worked out from a
     timestamp on the item, so this client and the server each apply the same elapsed
     time to their own copy and agree without talking, exactly as vanilla does with food
     rot. That is what makes a cooler on the floor cool live on screen.
+
+    The square sweep is what actually reaches world containers. The loot window's
+    container list is a UI artefact - it is wiped and rebuilt from whatever that window
+    happens to be showing - so hanging the only pass off it left a fridge or a freezer
+    untouched for whole days at a time, and water set to freeze in one never finished.
+    The sweep walks the squares around the player instead and asks the world directly.
 
     The server is nudged separately for containers this client does not own, so that
     its copy - the one that gets saved, and the only one allowed to turn water into ice
@@ -91,6 +97,71 @@ local function process(player, inventory)
     return "ticked, no nudge"
 end
 
+--[[ The square sweep ]]
+
+-- How far from the player, in squares, world containers are ticked. A pass is worked
+-- out from a timestamp, so a container missed while the player was away catches up in
+-- full the moment they come back within this radius: the radius decides when the work
+-- happens, never how much of it happens.
+local SWEEP_RADIUS = 2
+
+-- Everything on one square: containers standing on it (a fridge has two, the fridge
+-- and the freezer, and both need their own pass) and items dropped on it.
+local function sweepSquare(player, square, seen, tally)
+    if not square then return end
+
+    local objects = square:getObjects()
+    for i = 0, objects:size() - 1 do
+        local object = objects:get(i)
+        for index = 1, object:getContainerCount() do
+            local container = object:getContainerByIndex(index - 1)
+            if container and not seen[container] then
+                seen[container] = true
+                tally.containers = tally.containers + 1
+                -- Only worth asking while tracing: isPowered() walks the square's
+                -- neighbours, and this runs for every container within the radius.
+                if CF.DEBUG and CF.containerIsCold(container) then
+                    tally.cold = tally.cold + 1
+                end
+                process(player, container)
+            end
+        end
+    end
+
+    -- A cooler or a bag of ice set down on the floor is a world object rather than
+    -- something inside a container, so it is never reached by the loop above.
+    local dropped = square:getWorldObjects()
+    for i = 0, dropped:size() - 1 do
+        local item = dropped:get(i):getItem()
+        if item and not seen[item] then
+            seen[item] = true
+            tally.dropped = tally.dropped + 1
+            CF.processItem(item, false, 0)
+            if worthTicking(item) then
+                request(player, CF.addressGroundItem(item), item)
+            end
+        end
+    end
+end
+
+local function sweepNearby(player)
+    local square = player:getCurrentSquare()
+    local cell = getCell()
+    if not (square and cell) then return end
+
+    local x, y, z = square:getX(), square:getY(), square:getZ()
+    local seen = {}
+    local tally = { containers = 0, cold = 0, dropped = 0 }
+    for dy = -SWEEP_RADIUS, SWEEP_RADIUS do
+        for dx = -SWEEP_RADIUS, SWEEP_RADIUS do
+            sweepSquare(player, cell:getGridSquare(x + dx, y + dy, z), seen, tally)
+        end
+    end
+
+    CF.debug("sweep at %d,%d,%d: %d containers (%d powered cold), %d dropped items",
+        x, y, z, tally.containers, tally.cold, tally.dropped)
+end
+
 --[[ Version handshake ]]
 
 -- Half of this mod runs on the server, and a dedicated server only picks up a new
@@ -138,6 +209,7 @@ local function onEveryOneMinute()
         if player then
             if playerNum == 0 then checkServerVersion(player) end
             CF.processTopLevel(player:getInventory())
+            sweepNearby(player)
 
             local loot = getPlayerLoot(playerNum)
             if loot and loot.backpacks then
