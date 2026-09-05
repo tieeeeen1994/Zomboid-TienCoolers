@@ -1054,4 +1054,53 @@ handlers.EveryOneMinute()
 passed = reportStr("a shelf of junk is never handed to the server", net.sent("command:tick"), 0) and passed
 net.client = false
 
+-- Ice remembers where it has been. The elapsed gap belongs to the container the bag sat
+-- in through it, not to whatever it is being held in at the instant somebody finally
+-- looks: a bag lifted out of a freezer nobody had ticked for two days would otherwise
+-- have two days of melting applied on the way out, and it only lives about nine hours
+-- outside, so it would be destroyed by the act of picking it up.
+clock.hours = 0
+net.client = false
+net.packets = {}
+
+local restFreezer = newContainer("freezer", true)
+local restBag = restFreezer:AddItem("TienCoolers.IceBag")
+CF.processTopLevel(restFreezer)
+
+clock.hours = 48                       -- two days nobody came near it
+local pocket = newContainer("bag")
+restFreezer:Remove(restBag)
+pocket:add(restBag)
+CF.processTopLevel(pocket)
+
+passed = report("a bag out of an unwatched freezer comes out whole", restBag.delta, 1.0) and passed
+passed = reportStr("  and is still there to be carried", #pocket.list, 1) and passed
+
+clock.hours = 53                       -- and only now does it start melting
+CF.processTopLevel(pocket)
+passed = report("  then melts at the outside rate from there", restBag.delta, 1 - 5 / 9.6) and passed
+
+-- Clearing a spent bag away is a transfer like any other, and a client doing it to a
+-- freezer it does not own deletes the bag out from under the server.
+clock.hours = 0
+net.client = true
+net.packets = {}
+local otherFreezer = newWorldContainer(600, 600, 0, "freezer", false)   -- no power: it melts
+local spent = otherFreezer:AddItem("TienCoolers.IceBag")
+spent.delta = 0.01
+CF.processTopLevel(otherFreezer)
+clock.hours = 20
+CF.processTopLevel(otherFreezer)
+
+passed = report("a client melts a bag in a freezer it does not own", CF.getCharge(spent), 0.0) and passed
+passed = reportStr("  but leaves the removal to the owner", #otherFreezer.list, 1) and passed
+passed = reportStr("  and sends no removal of its own", net.sent("remove:TienCoolers.IceBag"), 0) and passed
+
+net.client = false
+clock.hours = 21
+net.packets = {}
+CF.processTopLevel(otherFreezer)
+passed = reportStr("and the owner clears it away", #otherFreezer.list, 0) and passed
+passed = reportStr("  and says so", net.sent("remove:TienCoolers.IceBag"), 1) and passed
+
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

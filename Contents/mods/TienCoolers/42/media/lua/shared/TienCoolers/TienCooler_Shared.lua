@@ -16,7 +16,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.2.3"
+CF.VERSION = "1.2.4"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -148,11 +148,19 @@ function CF.setCharge(item, value)
     return value
 end
 
+-- Taking an item out of a container is a transfer, exactly like putting one in, and the
+-- same rule has to apply: only the machine that owns the container may do it. A client
+-- doing it to a freezer it does not own deletes the bag out from under the server, and
+-- if the player is lifting that bag out at the same moment the two cross - the client
+-- draws a bag the server no longer has, and clicking it does nothing.
+--
+-- A spent bag left in place is inert: its charge is zero, so it cools nothing and reads
+-- as empty. The owner clears it away on its own next pass.
 function CF.destroyIce(item)
     local container = item:getContainer()
-    if container then
-        CF.removeItem(container, item)
-    end
+    if not container then return end
+    if not CF.mayTransfer(container) then return end
+    CF.removeItem(container, item)
 end
 
 -- Pull an item's temperature down to `target`, never up: something just out of a freezer
@@ -424,7 +432,17 @@ function CF.tickIce(item, isCold)
     local md = item:getModData()
     local now = CF.worldHours()
     local last = md.tcLast
+
+    -- The gap since the last look belongs to where the item *was* through it, not to
+    -- wherever it happens to be at this instant. Without that, a bag pulled out of a
+    -- freezer nobody had ticked for a day has a day of melting applied the moment it
+    -- lands in your hands - and a bag only lives about nine hours outside, so it is
+    -- destroyed on the way out of the freezer that was keeping it.
+    local wasCold = md.tcCold
+    if wasCold == nil then wasCold = isCold end
+
     md.tcLast = now
+    md.tcCold = isCold
 
     if CF.getCharge(item) > 0 then
         CF.chill(item, CF.ICE_HEAT)
@@ -435,7 +453,7 @@ function CF.tickIce(item, isCold)
     local dt = now - last
     local charge = CF.getCharge(item)
 
-    if isCold then
+    if wasCold then
         CF.setCharge(item, charge + dt / CF.opt("FreezeHours", 7.0))
         return
     end
@@ -659,7 +677,11 @@ function CF.processCooler(coolerItem, isCold)
     for _, item in ipairs(contents) do
         local power = CF.icePower(item)
         if power then
-            item:getModData().tcLast = now -- so it does not melt twice once taken out
+            -- So it does not melt twice once taken out, and so that whoever ticks it
+            -- next knows a cooler is not a freezer: the gap it spent in here was spent
+            -- being used up, not being refilled - unless the cooler itself was in one.
+            item:getModData().tcLast = now
+            item:getModData().tcCold = isCold
             local charge = CF.getCharge(item)
             if charge > 0 then
                 CF.chill(item, CF.ICE_HEAT)

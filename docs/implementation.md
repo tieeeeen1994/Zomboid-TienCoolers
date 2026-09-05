@@ -35,6 +35,18 @@ That produces exactly the same result as a slower rot rate, needs no per-tick pr
 self-corrects across unloaded chunks and long absences, since the game catches the item up
 when it reloads and the next pass rebates the right share of it.
 
+### Ice remembers where it has been
+
+The same catch-up needs one extra thing that rot does not, because ice is *destroyed* when
+it runs out and rot merely accumulates. `tcLast` says when a bag was last looked at, and
+`tcCold` says where it was sitting at the time. The gap between the two is charged to
+`tcCold`, never to wherever the bag happens to be at the instant somebody finally looks.
+
+Without that, lifting a bag out of a freezer nobody had ticked for a couple of days
+applies a couple of days of *melting* the moment it lands in your hands - and a bag lives
+about nine hours outside a cooler, so it is destroyed by the act of picking it up. The
+freezer that was keeping it is exactly where the gap was spent.
+
 ### Vanilla sandbox options
 
 `SandboxVars.FoodRotSpeed` and `SandboxVars.FridgeFactor` are both read straight out of
@@ -156,7 +168,15 @@ two of the item:
 | --- | --- |
 | cooling, melting, refreezing, rot rebate, the label | every machine, on its own copy |
 | turning water into bags of ice | whoever owns the container (`CF.mayTransfer`) |
+| clearing away a spent bag of ice | the same (`CF.destroyIce`) |
 | adding and removing items generally | the owner: your own inventory, else the server |
+
+That second and third row are the same rule, and missing either half of it shows up the
+same way: a client that deletes a spent bag out of a freezer it does not own takes it
+away from the server too, and if the player is lifting a bag out at that moment the two
+cross - the client keeps drawing a bag the server no longer has, and clicking it does
+nothing. A spent bag left in place is harmless: its charge is zero, so it cools nothing,
+and the owner clears it on its own next pass.
 
 A client that sees water finish freezing in a base freezer therefore leaves the flag set
 and makes nothing; the server does it, and the new bag arrives by the ordinary container
