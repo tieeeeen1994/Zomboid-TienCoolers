@@ -16,7 +16,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.2.5"
+CF.VERSION = "1.3.0"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -119,7 +119,14 @@ function CF.icePower(item)
     local ft = item:getFullType()
     local power = CF.IceSources[ft]
     if power then return power end
-    if ft == "Base.Coldpack" and CF.opt("UseColdpacks", true) then return 0.4 end
+
+    if ft == "Base.Coldpack" and CF.opt("UseColdpacks", true) then
+        power = CF.opt("ColdpackPower", 0.4)
+        -- Nil rather than zero: a zero-power cold source is still a cold source
+        -- everywhere else in here, and consumeIce divides by the power to work out how
+        -- much of a bag it spent. Turning the strength down to nothing means off.
+        if power and power > 0 then return power end
+    end
     return nil
 end
 
@@ -202,10 +209,19 @@ function CF.chill(item, target)
     end
 end
 
-local function containerIsCold(inventory)
+-- A fridge or a freezer, whether or not it is running. Kept apart from the powered
+-- check so the context menu can tell "this is not the right kind of container" from
+-- "this is the right container and the power is out" - the second is a silent failure
+-- otherwise, and looks exactly like the mod not working.
+local function isColdContainer(inventory)
     if not inventory then return false end
-    if not (inventory:isFridge() or inventory:isFreezer()) then return false end
-    return inventory:isPowered()
+    return inventory:isFridge() == true or inventory:isFreezer() == true
+end
+CF.isColdContainer = isColdContainer
+
+local function containerIsCold(inventory)
+    if not isColdContainer(inventory) then return false end
+    return inventory:isPowered() == true
 end
 CF.containerIsCold = containerIsCold
 
@@ -498,11 +514,30 @@ end
 
 --[[ Turning water into ice ]]
 
+-- Fluids a bag of ice can be made out of, by name rather than by object: this file is
+-- loaded before the game will necessarily hand one over, and a name this build does not
+-- have has to be skipped rather than becoming a nil in the middle of the list. Other
+-- mods may add their own.
+--
+-- Tainted water counts. Freezing is not filtering and the bag that comes out is an
+-- ordinary one, but a bottle filled from a rain barrel or a lake is tainted in B42, and
+-- refusing those silently - no menu entry, no reason given - reads exactly like the mod
+-- not working. Purified water is Fluid.Water already; purifying converts it.
+CF.FreezableFluids = { "Water", "TaintedWater" }
+
+local function fluidIsFreezable(fc)
+    for _, name in ipairs(CF.FreezableFluids) do
+        local fluid = Fluid and Fluid[name]
+        if fluid and fc:contains(fluid) then return true end
+    end
+    return false
+end
+
 function CF.canFreezeWater(item)
     if not item then return false end
     local fc = item:getFluidContainer()
     if not fc then return false end
-    if not fc:contains(Fluid.Water) then return false end
+    if not fluidIsFreezable(fc) then return false end
     -- Any amount will do: what is marked in one fridge pools, so a glass that could
     -- never make a bag on its own still counts towards one.
     return fc:getAmount() > 0
@@ -548,6 +583,36 @@ function CF.tickFreezing(item, isCold)
     if md.tcFreezeStart == nil or md.tcFreezeStart > now then
         md.tcFreezeStart = now
     end
+end
+
+-- What is pooled for freezing in one container and how far along it is. Nothing in the
+-- mod needs this; the player does. Water set to freeze changes nothing visible until a
+-- bag appears hours later, so without it an empty freezer looks the same whether the
+-- mod is working, the water is short of a bagful, or nothing was ever marked at all.
+-- Returns the pooled amount, what one bag costs, and the hours the newest of it still
+-- has to wait.
+function CF.freezeProgress(inventory)
+    local now = CF.worldHours()
+    local wait = CF.opt("FreezeHours", 7.0)
+    local pooled, remaining = 0.0, 0.0
+
+    local list = inventory:getItems()
+    for i = 0, list:size() - 1 do
+        local item = list:get(i)
+        local md = item:getModData()
+        if md.tcFreezing then
+            local fluid = item:getFluidContainer()
+            local amount = fluid and fluid:getAmount() or 0
+            if amount > 0 then
+                pooled = pooled + amount
+                local left = wait - (now - (md.tcFreezeStart or now))
+                if left < 0 then left = 0 end
+                if left > remaining then remaining = left end
+            end
+        end
+    end
+
+    return pooled, CF.opt("WaterPerBag", 5.0), remaining
 end
 
 -- Water freezes by the container, not by the bottle. Everything marked for freezing in

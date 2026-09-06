@@ -18,17 +18,21 @@ gives them their intended purpose and adds the ice to fill them with.
   faster outside one. Hot weather shortens it further. How much ice is left is shown on the
   bag itself.
 - **Freezing water.** Right-click a container of water inside a powered refrigerator or
-  freezer and choose *Freeze Into Ice*. Seven hours later the water has become a bag of ice. Water adds up across everything.
-  you set to freeze in the same fridge, so a few bottles make a bag between them. A
-  bag that has melted refills itself if it is left in a powered freezer.
+  freezer and choose *Freeze Into Ice*, and seven hours later it has become a bag of ice.
+  Tainted water works as well as clean, and the bag it makes is an ordinary one. Water
+  adds up across everything you set to freeze in the same fridge, so a few bottles make a
+  bag between them. A bag that has melted refills itself if it is left in a powered
+  freezer.
 - **Cold Packs.** The vanilla Cold Pack chills a cooler as well, at 40 percent of the strength
-  of a bag of ice.
+  of a bag of ice by default. Cold packs are far rarer than ice you can make yourself, so how
+  much one is worth is a sandbox setting; 0 turns them off.
 
 ## Sandbox options
 
 Nine settings are available on the **Tien's Coolers** sandbox page: cooling strength, ice
 lifetime, melting speed outside a cooler, freezing time, the water needed per bag, cold pack
-support, freezer loot, the blue tint on chilled items and the *(Iced)* label.
+support and cold pack strength, freezer loot, the blue tint on chilled items and the
+*(Iced)* label.
 
 The mod also follows the vanilla Food Rot Speed and Refrigeration Effectiveness settings, and
 a cooler is never allowed to preserve food better than a powered refrigerator does.

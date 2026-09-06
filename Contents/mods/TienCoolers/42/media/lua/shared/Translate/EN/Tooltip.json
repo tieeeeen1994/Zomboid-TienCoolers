@@ -1,4 +1,7 @@
 {
     "Tooltip_TienCoolerIceBag": "Keeps food fresh inside a cooler. Melts slowly in a cooler, quickly anywhere else, and refreezes in a powered fridge or freezer.",
-    "Tooltip_TienCoolers_Freeze": "Leave it in the powered freezer for %1 hours. Every %2 units of water becomes one bag of ice, adding up across everything you set to freeze in there."
+    "Tooltip_TienCoolers_Freeze": "Leave it in the powered freezer for %1 hours. Every %2 units of water becomes one bag of ice, adding up across everything you set to freeze in there.",
+    "Tooltip_TienCoolers_Freezing": "%1 of the %2 units needed for a bag are set to freeze in here. Ready in about %3 hours.",
+    "Tooltip_TienCoolers_FreezingShort": "Only %1 units of water are set to freeze in here, and a bag needs %2. Set more to freeze in the same fridge and they add up; until then nothing will come of it.",
+    "Tooltip_TienCoolers_NoPower": "This refrigerator has no power. Water only freezes in one that is running."
 }

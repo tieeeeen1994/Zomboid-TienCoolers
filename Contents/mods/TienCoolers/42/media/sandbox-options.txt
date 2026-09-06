@@ -58,6 +58,16 @@ option TienCoolers.UseColdpacks
     translation = TienCoolers_UseColdpacks,
 }
 
+option TienCoolers.ColdpackPower
+{
+    type = double,
+    min = 0.0,
+    max = 1.0,
+    default = 0.4,
+    page = TienCoolers,
+    translation = TienCoolers_ColdpackPower,
+}
+
 option TienCoolers.SpawnIceInLoot
 {
     type = boolean,

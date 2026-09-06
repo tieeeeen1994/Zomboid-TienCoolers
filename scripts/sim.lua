@@ -11,7 +11,7 @@ function getText(k) return k end
 -- net.translated is what a client has and a dedicated server does not.
 net = net or {}
 function getTextOrNull(k) return net.translated ~= false and k or nil end
-Fluid = { Water = "Water" }
+Fluid = { Water = "Water", TaintedWater = "TaintedWater", CarbonatedWater = "CarbonatedWater" }
 
 local classes = {}
 function instanceof(o, c) return o.__cls and o.__cls[c] == true end
@@ -897,12 +897,13 @@ SandboxVars.TienCoolers.WaterPerBag = 5.0
 -- minute and fires far too often to sweep on, so the sweep keeps its own clock.
 local SWEEP_GAP = 30000
 
-function newWaterHolder(amount)
+function newWaterHolder(amount, fluidName)
+    fluidName = fluidName or "Water"
     local item = newItem("Base.BucketWood", { InventoryItem = true })
     item.amount = amount
     item.fluid = {
         getAmount = function() return item.amount end,
-        contains = function() return true end,
+        contains = function(_, f) return f == fluidName end,
         removeFluid = function(_, v) item.amount = item.amount - v end,
     }
     return item
@@ -1143,5 +1144,104 @@ passed = reportStr("  and the cooler still reads as iced",
 runMinutes(48)
 passed = reportStr("  then it is spent and cleared out", #carried.inventory.list, 0) and passed
 passed = reportStr("  and the cooler loses its label", carried:getName(), "Base.Cooler") and passed
+
+-- Cold pack strength is a sandbox setting now. Cold packs are far rarer than ice you
+-- can make yourself, so how much one is worth is the player's call.
+SandboxVars.TienCoolers.UseColdpacks = true
+SandboxVars.TienCoolers.ColdpackPower = nil
+local pack = newItem("Base.Coldpack", { InventoryItem = true })
+passed = report("a cold pack is worth 0.4 bags by default", CF.icePower(pack), 0.4) and passed
+
+SandboxVars.TienCoolers.ColdpackPower = 0.9
+passed = report("  and whatever the setting says", CF.icePower(pack), 0.9) and passed
+
+-- Zero has to mean off, not a cold source worth nothing: consumeIce divides by the power.
+SandboxVars.TienCoolers.ColdpackPower = 0.0
+passed = reportStr("  and zero turns them off rather than dividing by it",
+    CF.icePower(pack), nil) and passed
+
+SandboxVars.TienCoolers.ColdpackPower = 0.4
+SandboxVars.TienCoolers.UseColdpacks = false
+passed = reportStr("  the switch still overrides the strength", CF.icePower(pack), nil) and passed
+SandboxVars.TienCoolers.UseColdpacks = true
+
+-- Water set to freeze changes nothing a player can see until a bag turns up hours later.
+-- Short of a bagful it never turns up at all, and an empty freezer looks the same either
+-- way, so the menu has to be able to say where things stand.
+SandboxVars.TienCoolers.FreezeHours = 7.0
+SandboxVars.TienCoolers.WaterPerBag = 5.0
+clock.hours = 100
+net.client = false
+
+local tellFreezer = newWorldContainer(700, 700, 0, "freezer", true)
+local dribble = newWaterHolder(2.0)
+tellFreezer:add(dribble)
+CF.startFreezingWater(dribble)
+
+local pooled, perBag, remaining = CF.freezeProgress(tellFreezer)
+passed = report("the pooled water is reported", pooled, 2.0) and passed
+passed = report("  against what a bag costs", perBag, 5.0) and passed
+passed = report("  with the wait still to run", remaining, 7.0) and passed
+
+clock.hours = 105
+local _, _, left = CF.freezeProgress(tellFreezer)
+passed = report("  which counts down", left, 2.0) and passed
+
+clock.hours = 110
+local _, _, none = CF.freezeProgress(tellFreezer)
+passed = report("  and stops at zero rather than going negative", none, 0.0) and passed
+
+-- The same container with the power out. The option is offered but greyed, because
+-- silence here is indistinguishable from the mod being broken.
+local darkFreezer = newWorldContainer(710, 710, 0, "freezer", false)
+local darkWater = newWaterHolder(10.0)
+darkFreezer:add(darkWater)
+
+local darkMenu = { options = {} }
+function darkMenu:addOption(text, target, callback, args)
+    local o = { text = text, target = target, callback = callback, args = args }
+    table.insert(self.options, o); return o
+end
+handlers.OnFillInventoryObjectContextMenu(0, darkMenu, { darkWater })
+passed = reportStr("an unpowered freezer still offers the option", #darkMenu.options, 1) and passed
+passed = reportStr("  greyed out", darkMenu.options[1] and darkMenu.options[1].notAvailable, true) and passed
+
+-- And a powered one offers the real thing, not the greyed one.
+local litMenu = { options = {} }
+function litMenu:addOption(text, target, callback, args)
+    local o = { text = text, target = target, callback = callback, args = args }
+    table.insert(self.options, o); return o
+end
+handlers.OnFillInventoryObjectContextMenu(0, litMenu, { dribble })
+passed = reportStr("a powered one offers a live option", #litMenu.options, 1) and passed
+passed = reportStr("  that is not greyed", litMenu.options[1] and litMenu.options[1].notAvailable, nil) and passed
+
+-- What counts as water. A bottle filled from a rain barrel or a lake is tainted in B42,
+-- and refusing those silently - no menu entry, no reason - reads exactly like the mod
+-- not working. Freezing is not filtering, so the bag that comes out is an ordinary one.
+clock.hours = 200
+net.client = false
+SandboxVars.TienCoolers.FreezeHours = 7.0
+SandboxVars.TienCoolers.WaterPerBag = 5.0
+
+passed = reportStr("clean water can be frozen",
+    CF.canFreezeWater(newWaterHolder(5.0, "Water")), true) and passed
+passed = reportStr("tainted water can be frozen too",
+    CF.canFreezeWater(newWaterHolder(5.0, "TaintedWater")), true) and passed
+passed = reportStr("seltzer cannot",
+    CF.canFreezeWater(newWaterHolder(5.0, "CarbonatedWater")), false) and passed
+passed = reportStr("and neither can petrol",
+    CF.canFreezeWater(newWaterHolder(5.0, "Petrol")), false) and passed
+
+-- All the way through, to an ordinary bag of ice.
+local rainFreezer = newWorldContainer(800, 800, 0, "freezer", true)
+local rainWater = newWaterHolder(5.0, "TaintedWater")
+rainFreezer:add(rainWater)
+CF.startFreezingWater(rainWater)
+CF.processTopLevel(rainFreezer)
+clock.hours = 208
+CF.processTopLevel(rainFreezer)
+passed = reportStr("rain barrel water makes an ordinary bag of ice", bagsIn(rainFreezer), 1) and passed
+passed = report("  and is spent doing it", rainWater.amount, 0.0) and passed
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

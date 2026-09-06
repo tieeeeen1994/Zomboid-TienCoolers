@@ -327,13 +327,26 @@ local function collectItems(selected)
     return out
 end
 
+local function tooltipFor(option, text)
+    local tooltip = ISInventoryPaneContextMenu.addToolTip()
+    tooltip.description = text
+    option.toolTip = tooltip
+end
+
 local function onFillInventoryContextMenu(playerNum, context, selected)
     local player = getSpecificPlayer(playerNum)
-    local freezable, cancellable = {}, {}
+    local freezable, cancellable, unpowered = {}, {}, {}
+
     for _, item in ipairs(collectItems(selected)) do
         local container = item:getContainer()
-        if container and CF.containerIsCold(container) then
-            if CF.isFreezingWater(item) then
+        if container and CF.isColdContainer(container) then
+            if not CF.containerIsCold(container) then
+                -- The right container with the power out. Worth saying so: silence here
+                -- is indistinguishable from the mod being broken.
+                if CF.canFreezeWater(item) or CF.isFreezingWater(item) then
+                    unpowered[#unpowered + 1] = item
+                end
+            elseif CF.isFreezingWater(item) then
                 cancellable[#cancellable + 1] = item
             elseif CF.canFreezeWater(item) then
                 freezable[#freezable + 1] = item
@@ -344,15 +357,34 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
     if #freezable > 0 then
         local option = context:addOption(getText("ContextMenu_TienCoolers_Freeze"), player,
             onStartFreezing, freezable)
-        local tooltip = ISInventoryPaneContextMenu.addToolTip()
-        tooltip.description = getText("Tooltip_TienCoolers_Freeze",
-            round(CF.opt("FreezeHours", 7.0), 1), round(CF.opt("WaterPerBag", 5.0), 2))
-        option.toolTip = tooltip
+        tooltipFor(option, getText("Tooltip_TienCoolers_Freeze",
+            round(CF.opt("FreezeHours", 7.0), 1), round(CF.opt("WaterPerBag", 5.0), 2)))
     end
 
     if #cancellable > 0 then
-        context:addOption(getText("ContextMenu_TienCoolers_CancelFreeze"), player,
+        local option = context:addOption(getText("ContextMenu_TienCoolers_CancelFreeze"), player,
             onStopFreezing, cancellable)
+
+        -- Water set to freeze does nothing visible until a bag turns up hours later, so
+        -- say where it has got to. Short of a bagful is the case worth naming: the water
+        -- sits there indefinitely and the freezer looks no different from a broken one.
+        local container = cancellable[1]:getContainer()
+        if container then
+            local pooled, perBag, remaining = CF.freezeProgress(container)
+            if pooled < perBag then
+                tooltipFor(option, getText("Tooltip_TienCoolers_FreezingShort",
+                    round(pooled, 2), round(perBag, 2)))
+            else
+                tooltipFor(option, getText("Tooltip_TienCoolers_Freezing",
+                    round(pooled, 2), round(perBag, 2), round(remaining, 1)))
+            end
+        end
+    end
+
+    if #unpowered > 0 and #freezable == 0 and #cancellable == 0 then
+        local option = context:addOption(getText("ContextMenu_TienCoolers_Freeze"), player, nil)
+        option.notAvailable = true
+        tooltipFor(option, getText("Tooltip_TienCoolers_NoPower"))
     end
 end
 
