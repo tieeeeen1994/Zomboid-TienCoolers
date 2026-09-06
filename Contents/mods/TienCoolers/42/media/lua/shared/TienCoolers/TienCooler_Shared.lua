@@ -16,7 +16,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.2.4"
+CF.VERSION = "1.2.5"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -125,12 +125,37 @@ end
 
 -- Bags of ice are drainables so the vanilla UI shows how much is left; anything else
 -- (a Coldpack, say) carries its charge in modData.
+--
+-- A drainable cannot hold the real number, though. B42 keeps the charge as an integer
+-- count of uses - setCurrentUsesFloat is `uses = round(f / useDelta)`, and
+-- getCurrentUsesFloat hands back `uses * useDelta` - so at the bag's UseDelta of 0.02 the
+-- field only holds fiftieths. A pass one game minute long melts about 0.0003 of a bag,
+-- which rounds straight back to the use it started on. Every pass. So ice in a cooler
+-- you are carrying, ticked every game minute, never melts at all, while the same bag
+-- left on the floor - ticked rarely, and five times faster - empties normally, and in
+-- multiplayer the two copies drift until the bag reads full in your hands and empty the
+-- moment you set it down.
+--
+-- So the exact charge is ours, in modData, and the item's own field is the display of
+-- it. If something outside this mod moves that field - a fresh copy streamed from the
+-- server, a player using the item - it disagrees by more than rounding can explain, and
+-- the item wins.
 function CF.getCharge(item)
-    if instanceof(item, "DrainableComboItem") then
-        -- B42 dropped getUsedDelta(); getCurrentUsesFloat() is the same 0..1 fraction.
-        return item:getCurrentUsesFloat()
-    end
     local md = item:getModData()
+
+    if instanceof(item, "DrainableComboItem") then
+        local shown = item:getCurrentUsesFloat()
+        local exact = md.tcCharge
+        if exact == nil then return shown end
+
+        local step = item:getUseDelta()
+        if step == nil or step <= 0 then step = 1.0 end
+        -- Rounding can never account for a whole step, so anything past that is somebody
+        -- else's doing.
+        if math.abs(shown - exact) > step then return shown end
+        return exact
+    end
+
     if md.tcCharge == nil then md.tcCharge = 1.0 end
     return md.tcCharge
 end
@@ -138,11 +163,13 @@ end
 function CF.setCharge(item, value)
     if value < 0 then value = 0 end
     if value > 1 then value = 1 end
+
+    item:getModData().tcCharge = value
+
     if instanceof(item, "DrainableComboItem") then
-        item:setUsedDelta(value)
+        item:setUsedDelta(value)   -- the bar the player sees, to the nearest use
         CF.syncCharge(item)
     else
-        item:getModData().tcCharge = value
         CF.syncModData(item)
     end
     return value

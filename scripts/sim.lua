@@ -228,8 +228,18 @@ function Item:setAge(v) self.age = v end
 function Item:getOffAgeMax() return self.offAgeMax end
 function Item:isFrozen() return self.frozen end
 function Item:isRotten() return self.age >= self.offAgeMax end
-function Item:getCurrentUsesFloat() return self.delta end   -- B42; getUsedDelta is gone
-function Item:setUsedDelta(v) self.delta = v end
+-- B42 keeps a drainable's charge as an integer count of uses: setCurrentUsesFloat is
+-- `uses = round(f / useDelta)` and getCurrentUsesFloat gives `uses * useDelta` back, so
+-- the field can only hold multiples of UseDelta - fiftieths, for the ice bag - and any
+-- change smaller than half a step rounds away to nothing. Modelling it as a plain float
+-- is what hid ice in a carried cooler never melting at all. getUsedDelta itself is gone.
+function Item:getUseDelta() return self.useDelta or 0.02 end
+function Item:getCurrentUsesFloat() return self.delta end
+function Item:setUsedDelta(v)
+    if v < 0 then v = 0 elseif v > 1 then v = 1 end
+    local step = self:getUseDelta()
+    self.delta = math.floor(v / step + 0.5) * step
+end
 function Item:IsInventoryContainer() return self.inventory ~= nil end
 function Item:getID() return self.id end
 function Item:syncItemFields() net.log("fields:%s", self.fullType) end
@@ -1102,5 +1112,36 @@ net.packets = {}
 CF.processTopLevel(otherFreezer)
 passed = reportStr("and the owner clears it away", #otherFreezer.list, 0) and passed
 passed = reportStr("  and says so", net.sent("remove:TienCoolers.IceBag"), 1) and passed
+
+-- Ice in a cooler you are carrying is ticked every game minute, because that is what
+-- EveryOneMinute means. A game minute of melting is about 0.0003 of a bag, well under
+-- half of the 0.02 step the item's own charge field can hold, so every pass rounds back
+-- to where it started and the bag never empties. Stepping an hour at a time - which is
+-- how every other test here walks the clock - hides it completely.
+clock.hours = 0
+net.client = false
+SandboxVars.TienCoolers.IceLifeHours = 48.0
+
+local carried = newBag("Base.Cooler")
+local carriedIce = carried.inventory:AddItem("TienCoolers.IceBag")
+local worn = newContainer("bag")
+worn:add(carried)
+CF.processTopLevel(worn)
+
+local function runMinutes(upToHour)
+    for minute = 1, math.floor(upToHour * 60) do
+        clock.hours = minute / 60.0
+        CF.processTopLevel(worn)
+    end
+end
+
+runMinutes(24)
+passed = report("half a bag gone after 24h, a minute at a time", CF.getCharge(carriedIce), 0.5) and passed
+passed = reportStr("  and the cooler still reads as iced",
+    carried:getName(), "Base.Cooler IGUI_TienCoolers_Iced") and passed
+
+runMinutes(48)
+passed = reportStr("  then it is spent and cleared out", #carried.inventory.list, 0) and passed
+passed = reportStr("  and the cooler loses its label", carried:getName(), "Base.Cooler") and passed
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

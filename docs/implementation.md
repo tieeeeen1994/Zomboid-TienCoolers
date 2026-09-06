@@ -47,6 +47,39 @@ applies a couple of days of *melting* the moment it lands in your hands - and a 
 about nine hours outside a cooler, so it is destroyed by the act of picking it up. The
 freezer that was keeping it is exactly where the gap was spent.
 
+### A drainable cannot hold the charge
+
+The bag of ice is a `DrainableComboItem` so the vanilla UI draws a familiar bar for it,
+but that bar is not a float. B42 stores the charge as an integer count of uses:
+
+```java
+public void setCurrentUsesFloat(float f) {
+    f = PZMath.clamp(f, 0.0f, 1.0f);
+    this.uses = Math.round(f / this.useDelta);   // integer
+}
+public float getCurrentUsesFloat() { return this.uses * this.useDelta; }
+```
+
+At the bag's `UseDelta = 0.02` the field holds fiftieths and nothing finer. One pass a
+game minute long melts `1/60 / 48` = about **0.0003** of a bag, which `Math.round` puts
+straight back on the use it started from - so the write is a no-op, every time, forever.
+
+That is invisible until you notice which containers are ticked *often*. A cooler in your
+inventory is walked every `EveryOneMinute`, so its ice never melted at all. The same bag
+on the floor is swept every ten seconds and melts five times faster, so its steps clear
+the rounding and it empties normally. In multiplayer the two copies then drift apart
+until the bag reads full in your hands and empty the moment you set it down.
+
+So `tcCharge` in modData is the real number and the item's field is the *display* of it,
+written on every change so the bar and the weight stay right. `CF.getCharge` prefers the
+note but yields to the item whenever the two differ by more than a whole step, which
+rounding can never explain - that is a fresh copy streamed from the server, or a player
+having used the item, and in both cases the item is right and the note is stale.
+
+Anything stepping the clock an hour at a time hides all of this, which is exactly how the
+sim used to walk it. The regression test steps a game minute at a time instead, and the
+harness models `setUsedDelta` with the rounding the real one does.
+
 ### Vanilla sandbox options
 
 `SandboxVars.FoodRotSpeed` and `SandboxVars.FridgeFactor` are both read straight out of
