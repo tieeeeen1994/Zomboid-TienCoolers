@@ -1,13 +1,13 @@
 VERSION = 1,
 
-option TienCoolers.CoolFactor
+option TienCoolers.CoolStrength
 {
     type = double,
     min = 0.0,
     max = 1.0,
-    default = 0.25,
+    default = 0.5,
     page = TienCoolers,
-    translation = TienCoolers_CoolFactor,
+    translation = TienCoolers_CoolStrength,
 }
 
 option TienCoolers.IceLifeHours

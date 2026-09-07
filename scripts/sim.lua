@@ -297,8 +297,8 @@ for hour = 1, 72 do
     CF.processTopLevel(top)
 end
 
--- 48 h of ice at 0.25x, then 24 h uncooled.
-passed = report("steak age after 48h iced + 24h warm", steak.age, 48 * ROT * 0.25 + 24 * ROT) and passed
+-- 48 h of ice at 0.6x, then 24 h uncooled.
+passed = report("steak age after 48h iced + 24h warm", steak.age, 48 * ROT * 0.6 + 24 * ROT) and passed
 passed = report("ice fully melted", ice.delta, 0.0) and passed
 passed = report("melted bag removed from cooler", #cooler.inventory.list, 1) and passed
 
@@ -450,29 +450,39 @@ CF.processTopLevel(warm)
 passed = report("tint disabled leaves heat alone", plain.heat, 1.0) and passed
 SandboxVars.TienCoolers.ShowColdTint = nil
 
--- Scenario: a cooler can never preserve food better than a working fridge. With
--- Refrigeration Effectiveness on "Very Low" a real fridge only manages 0.4, so the
--- cooler's own 0.25 is floored up to match instead of beating it.
-passed = report("cool factor at default refrigeration", CF.coolFactor(), 0.25) and passed
+-- Scenario: cooling strength is a fraction of a working fridge, so the cooler is read off
+-- the line between no cooling (1.0) and whatever Refrigeration Effectiveness gives a real
+-- fridge. The ends of the scale are what the setting promises: 1 matches a fridge exactly
+-- and 0 leaves food to rot as though the cooler were empty. Neither can beat a fridge,
+-- which is the guarantee the old hidden floor used to make and kept getting wrong.
+passed = report("cool factor at default refrigeration", CF.coolFactor(), 0.6) and passed
+SandboxVars.TienCoolers.CoolStrength = 1.0
+passed = report("strength 1 matches a fridge", CF.coolFactor(), CF.fridgeFactor()) and passed
+SandboxVars.TienCoolers.CoolStrength = 0.0
+passed = report("strength 0 does nothing at all", CF.coolFactor(), 1.0) and passed
+SandboxVars.TienCoolers.CoolStrength = nil
+
+-- With Refrigeration Effectiveness on "Very Low" a real fridge only manages 0.4, so half
+-- of one is 0.7 rather than the 0.6 it is on a Normal game: the cooler follows the fridge.
 SandboxVars.FridgeFactor = 1
-passed = report("cool factor floored by Very Low fridges", CF.coolFactor(), 0.4) and passed
+passed = report("cool factor tracks Very Low fridges", CF.coolFactor(), 0.7) and passed
 
 clock.hours = 0
-local floored = newItem("Base.Cooler", { InventoryItem = true })
-floored.inventory = newContainer("bag")
-floored.inventory:AddItem("TienCoolers.IceBag")
+local halved = newItem("Base.Cooler", { InventoryItem = true })
+halved.inventory = newContainer("bag")
+halved.inventory:AddItem("TienCoolers.IceBag")
 local roast = newItem("Base.Steak", { InventoryItem = true, Food = true })
 roast.offAgeMax = 1000
-floored.inventory:add(roast)
+halved.inventory:add(roast)
 local shed = newContainer("bag")
-shed:add(floored)
+shed:add(halved)
 CF.processTopLevel(shed)          -- baseline pass, as the first minute in game would
 for hour = 1, 24 do
     clock.hours = hour
     roast.age = roast.age + ROT
     CF.processTopLevel(shed)
 end
-passed = report("roast age after 24h at the floor", roast.age, 24 * ROT * 0.4) and passed
+passed = report("roast age after 24h at half a Very Low fridge", roast.age, 24 * ROT * 0.7) and passed
 SandboxVars.FridgeFactor = nil
 
 -- Scenario: the (Iced) label on the cooler bag itself. Food is deliberately left
@@ -668,7 +678,7 @@ clock.hours = 24
 droppedSteak.age = droppedSteak.age + 24 / 24
 handlers.OnClientCommand("TienCoolers", "tick", me, groundAddress)
 passed = report("the server melts ice in a cooler on the ground", droppedIce.delta, 0.5) and passed
-passed = report("and rebates the rot it prevented", droppedSteak.age, 0.25) and passed
+passed = report("and rebates the rot it prevented", droppedSteak.age, 0.6) and passed
 
 -- Putting ice into a cooler that is already on the ground: the loot window hands us
 -- that cooler's own container button, which is the inside of a cooler and must not be

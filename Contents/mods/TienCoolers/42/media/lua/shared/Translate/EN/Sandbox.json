@@ -1,8 +1,8 @@
 {
     "Sandbox_TienCoolers": "Tien's Coolers",
 
-    "Sandbox_TienCoolers_CoolFactor": "Cooling Strength",
-    "Sandbox_TienCoolers_CoolFactor_tooltip": "Rot rate for food in an iced cooler, as a fraction of normal. 0.25 means food keeps four times as long. 0 stops rot entirely. A cooler is never allowed to beat a powered fridge, so this is floored at whatever Refrigeration Effectiveness gives one.",
+    "Sandbox_TienCoolers_CoolStrength": "Cooling Strength",
+    "Sandbox_TienCoolers_CoolStrength_tooltip": "How much of a working refrigerator's cooling an iced cooler manages. 1 makes it the equal of a fridge, 0.5 gets it half way there, and 0 means the ice does nothing at all. It is measured against whatever your Refrigeration Effectiveness setting gives a real fridge, so the two move together; at the default 0.5 and Normal refrigeration, food in a cooler rots at 0.6 of its usual speed. A cooler is never allowed to beat a fridge, which is why the scale stops at 1.",
 
     "Sandbox_TienCoolers_IceLifeHours": "Ice Lifetime (hours)",
     "Sandbox_TienCoolers_IceLifeHours_tooltip": "In-game hours one full bag of ice lasts inside a cooler at 20 C. Hot weather burns through it faster, cold weather slower.",

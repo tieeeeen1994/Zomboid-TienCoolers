@@ -1,7 +1,7 @@
 # Tien's Coolers
 
-A cooler packed with ice keeps the food inside it fresh four times longer, anywhere you carry
-it. No power and no refrigerator are required.
+A cooler packed with ice preserves the food inside it half as well as a working refrigerator,
+anywhere you carry it. No power and no refrigerator are required.
 
 Coolers already exist in Project Zomboid, but they do nothing for the food they hold. This mod
 gives them their intended purpose and adds the ice to fill them with.
@@ -11,7 +11,9 @@ gives them their intended purpose and adds the ice to fill them with.
 - **Bag of Ice.** A new item. It is found in shop display freezers and in household and garage
   chest freezers, and it can also be made at home.
 - **Cooling.** Put a bag of ice in any cooler, including the Beer, Meat, Soda and Seafood
-  coolers, and the food inside rots at a quarter of the usual rate. The cooler is labelled
+  coolers, and the food inside rots more slowly - by default at half the strength of a
+  powered refrigerator, which on a Normal refrigeration game is 0.6 of the usual rate,
+  and a sandbox setting either way. The cooler is labelled
   *(Iced)* for as long as the ice lasts, and the chilled items are tinted blue in the
   inventory window in the same way as food in a working refrigerator.
 - **Melting.** A full bag lasts about two days inside a cooler and melts roughly five times
@@ -34,8 +36,10 @@ lifetime, melting speed outside a cooler, freezing time, the water needed per ba
 support and cold pack strength, freezer loot, the blue tint on chilled items and the
 *(Iced)* label.
 
-The mod also follows the vanilla Food Rot Speed and Refrigeration Effectiveness settings, and
-a cooler is never allowed to preserve food better than a powered refrigerator does.
+The mod also follows the vanilla Food Rot Speed and Refrigeration Effectiveness settings.
+Cooling strength is measured as a fraction of whatever a real fridge manages, so a cooler
+tracks those settings, and because that fraction stops at 1 it is never allowed to preserve
+food better than a powered refrigerator does.
 
 ## Compatibility
 

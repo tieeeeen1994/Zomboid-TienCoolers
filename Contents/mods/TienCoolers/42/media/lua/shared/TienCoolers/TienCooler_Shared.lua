@@ -16,7 +16,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.3.0"
+CF.VERSION = "1.4.0"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -51,7 +51,7 @@ local ROT_SPEED = { 1.7, 1.4, 1.0, 0.7, 0.4 }
 
 -- Food.getFridgeFactor(), keyed by SandboxVars.FridgeFactor (the "Refrigeration
 -- Effectiveness" sandbox option). Vanilla applies this to powered fridges *and*
--- freezers; a cooler is never allowed to beat it.
+-- freezers; a cooler is measured as a fraction of it.
 local FRIDGE_FACTOR = { 0.4, 0.3, 0.2, 0.1, 0.03, 0.0 }
 
 -- ISInventoryPane tints a row blue whenever getHeat() < 1, at the strength of
@@ -84,15 +84,18 @@ function CF.fridgeFactor()
     return FRIDGE_FACTOR[v] or 0.2
 end
 
--- A box of melting ice cannot preserve food better than a working fridge, so the
--- cooling strength is floored at whatever the player's Refrigeration Effectiveness
--- setting gives a real one. At the default settings (cooler 0.25, fridge 0.2) the
--- floor never bites; on a "Very Low" refrigeration game it stops the cooler from
--- quietly becoming the best fridge in Kentucky.
+-- "Cooling Strength" is how much of a working fridge's cooling a cooler manages, so the
+-- rot rate is read off the line between no cooling at all and whatever the player's
+-- Refrigeration Effectiveness gives a real fridge: 1 makes the two equal, the default 0.5
+-- gets a cooler half way there, 0 leaves food to rot as though the box were empty. The
+-- slider stops at 1, so a box of melting ice can never beat a machine and there is no
+-- hidden floor to make the setting lie about what it does. Reading it against the fridge
+-- also means the mod follows a modded or dialled-down refrigeration game for free.
 function CF.coolFactor()
-    local factor = CF.opt("CoolFactor", 0.25)
-    local fridge = CF.fridgeFactor()
-    return factor > fridge and factor or fridge
+    local strength = CF.opt("CoolStrength", 0.5)
+    if strength < 0.0 then strength = 0.0 end
+    if strength > 1.0 then strength = 1.0 end
+    return 1.0 - strength * (1.0 - CF.fridgeFactor())
 end
 
 -- Ice melts faster in a Kentucky summer than in a January cold snap.

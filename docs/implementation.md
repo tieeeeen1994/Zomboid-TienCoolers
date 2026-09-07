@@ -93,11 +93,19 @@ harness models `setUsedDelta` with the rounding the real one does.
 |---|---|---|---|---|---|---|
 | `getFridgeFactor()` | 0.4 | 0.3 | 0.2 | 0.1 | 0.03 | 0.0 |
 
-The rot speed bounds the rebate (`cap = dt * rotSpeed / 24`). The fridge factor is a
-*floor* on `CoolFactor`: a box of melting ice must never preserve food better than a
-working fridge does. At stock settings the floor never bites, because a cooler's 0.25 sits
-just behind a fridge's 0.2, but on a Very Low refrigeration game the cooler is pulled back to
-0.4 alongside it rather than quietly becoming the best fridge in Kentucky.
+The rot speed bounds the rebate (`cap = dt * rotSpeed / 24`). The fridge factor is the far
+end of the `CoolStrength` scale: a cooler's rot rate is read off the line between no cooling
+at all and whatever a real fridge manages, `1 - strength * (1 - fridgeFactor)`. A strength of
+1 makes a cooler the equal of a fridge, the default 0.5 gets it half way there (0.6 on a
+Normal refrigeration game), and 0 leaves food to rot as though the box were empty.
+
+Because the scale stops at 1, a box of melting ice can never preserve food better than a
+working fridge does, and the setting now says so itself rather than leaning on a hidden
+floor. It used to: builds up to 1.3.0 clamped `CoolFactor` up to the fridge's own rate,
+which silently contradicted the tooltip's promise that 0 stopped rot, because on a stock
+game it did not - it bought you 0.2 and no more. Renaming the option to `CoolStrength` in
+1.4.0 also means an existing save falls through to the new default instead of reading its
+old 0.25 on a scale where that now means something close to the opposite.
 
 ### The blue tint
 
