@@ -214,7 +214,7 @@ local nextItemId = 1
 function newItem(fullType, cls)
     nextItemId = nextItemId + 1
     return setmetatable({
-        fullType = fullType, __cls = cls or {}, md = {}, age = 0.0,
+        fullType = fullType, __cls = cls or {}, md = {}, age = 0.0, lastAged = 0.0,
         offAgeMax = 3, frozen = false, delta = 1.0, heat = 1.0, id = nextItemId,
     }, Item)
 end
@@ -225,6 +225,46 @@ function Item:getContainer() return self.container end
 function Item:getInventory() return self.inventory end
 function Item:getAge() return self.age end
 function Item:setAge(v) self.age = v end
+
+-- Nothing in the game ages food as time passes. Food.update() ages it only
+-- `if (GameServer.server)`, and in single player the one remaining caller is
+-- ISInventoryPane's render loop - `if instanceof(item, 'InventoryItem') then
+-- item:updateAge() end`, once a frame, for whichever container that window is drawing.
+-- Everywhere else the age simply stands still, and the whole gap is caught up from
+-- `lastAged` the moment somebody finally looks.
+--
+-- Modelling that lag is the point of this stub. A harness that ages the food itself,
+-- neatly in step with the mod's own passes, cannot see the mod lose the rot that
+-- arrives in one lump - which is the whole of the bug 1.4.1 fixes.
+local SIM_ROT_SPEED = { 1.7, 1.4, 1.0, 0.7, 0.4 }
+local SIM_FRIDGE_FACTOR = { 0.4, 0.3, 0.2, 0.1, 0.03, 0.0 }
+
+-- Food.getOutermostContainer(): a cooler inside a backpack inside a fridge is in the
+-- fridge, which is why marking the cooler's own container cold would achieve nothing.
+local function outermostContainer(item)
+    local container = item.container
+    for _ = 1, 8 do
+        if not container then return nil end
+        local holder = container.containingItem
+        if not holder or not holder.container then return container end
+        container = holder.container
+    end
+    return container
+end
+
+function Item:updateAge()
+    if not self.__cls.Food then return end
+
+    local delta = clock.hours - self.lastAged
+    self.lastAged = clock.hours
+    if delta <= 0 or self.frozen then return end
+
+    local outer = outermostContainer(self)
+    if outer and (outer:isFridge() or outer:isFreezer()) and outer:isPowered() then
+        delta = delta * (SIM_FRIDGE_FACTOR[SandboxVars.FridgeFactor] or 0.2)
+    end
+    self.age = self.age + delta * (SIM_ROT_SPEED[SandboxVars.FoodRotSpeed] or 1.0) / 24.0
+end
 function Item:getOffAgeMax() return self.offAgeMax end
 function Item:isFrozen() return self.frozen end
 function Item:isRotten() return self.age >= self.offAgeMax end
@@ -278,8 +318,8 @@ end
 
 local passed = true
 
--- Scenario: one cooler, one bag of ice, one steak. Vanilla ages food by
--- rotSpeed/24 per hour; we step an hour at a time and let the mod react.
+-- Scenario: one cooler, one bag of ice, one steak. The game ages food by rotSpeed/24
+-- per hour, but only when asked; we step an hour at a time and let the mod react.
 local cooler = newItem("Base.Cooler", { InventoryItem = true })
 cooler.inventory = newContainer("bag")
 local ice = cooler.inventory:AddItem("TienCoolers.IceBag")
@@ -293,7 +333,6 @@ top:add(cooler)
 local ROT = 1.0 / 24.0
 for hour = 1, 72 do
     clock.hours = hour
-    steak.age = steak.age + ROT     -- what the game itself would do
     CF.processTopLevel(top)
 end
 
@@ -301,6 +340,43 @@ end
 passed = report("steak age after 48h iced + 24h warm", steak.age, 48 * ROT * 0.6 + 24 * ROT) and passed
 passed = report("ice fully melted", ice.delta, 0.0) and passed
 passed = report("melted bag removed from cooler", #cooler.inventory.list, 1) and passed
+
+-- Regression, 1.4.1: the same cooler, with nobody looking at it. The game ages food
+-- when something asks, not as time passes, so a cooler in a closed bag is untouched
+-- until the player opens their inventory and then jumps the whole gap in one frame.
+-- Until 1.4.1 that lump landed inside a single one-minute pass, and a pass may only
+-- rebate the minute of rot that could have happened since the pass before it: an hour
+-- of rot was rebated a minute's worth and the other fifty-nine minutes were kept. A
+-- carried cooler preserved nothing at all unless the player sat with the inventory
+-- window open. Ticked a minute at a time and never looked at, it has to come out at
+-- exactly the cooled rate - and the food beside it in the same bag at the plain one.
+clock.hours = 0
+local unwatched = newBag("Base.Cooler")
+unwatched.inventory:AddItem("TienCoolers.IceBag")
+local chilled = newItem("Base.Cabbage", { InventoryItem = true, Food = true })
+chilled.offAgeMax = 1000
+unwatched.inventory:add(chilled)
+local control = newItem("Base.Cabbage", { InventoryItem = true, Food = true })
+control.offAgeMax = 1000
+local pocket = newContainer("bag")
+pocket:add(unwatched)
+pocket:add(control)
+CF.processTopLevel(pocket)
+
+for minute = 1, 60 do
+    clock.hours = minute / 60.0
+    CF.processTopLevel(pocket)
+    -- The player glances at their inventory every ten minutes. Nothing else in single
+    -- player ages food, so this is the only place the game's own catch-up can land, and
+    -- it lands ten minutes at a time into a pass allowed to rebate one.
+    if minute % 10 == 0 then
+        chilled:updateAge()
+        control:updateAge()
+    end
+end
+
+passed = report("an unwatched hour in a cooler still cools", chilled.age, ROT * 0.6, 1e-9) and passed
+passed = report("  while the same hour beside it does not", control.age, ROT, 1e-9) and passed
 
 -- Scenario: ice sitting loose in a backpack melts five times faster (48 * 0.2 = 9.6 h).
 clock.hours = 0
@@ -479,7 +555,6 @@ shed:add(halved)
 CF.processTopLevel(shed)          -- baseline pass, as the first minute in game would
 for hour = 1, 24 do
     clock.hours = hour
-    roast.age = roast.age + ROT
     CF.processTopLevel(shed)
 end
 passed = report("roast age after 24h at half a Very Low fridge", roast.age, 24 * ROT * 0.7) and passed
@@ -675,7 +750,6 @@ passed = reportStr("a bag held by a player still has no address",
 net.client = false
 handlers.OnClientCommand("TienCoolers", "tick", me, groundAddress)   -- baseline pass
 clock.hours = 24
-droppedSteak.age = droppedSteak.age + 24 / 24
 handlers.OnClientCommand("TienCoolers", "tick", me, groundAddress)
 passed = report("the server melts ice in a cooler on the ground", droppedIce.delta, 0.5) and passed
 passed = report("and rebates the rot it prevented", droppedSteak.age, 0.6) and passed
@@ -803,8 +877,6 @@ net.client = false
 local serverCooler, serverIce, serverFood = newIdenticalCooler(0)
 
 clock.hours = 18
-clientFood.age = 18 / 24
-serverFood.age = 18 / 24
 net.client = true
 CF.processTopLevel(clientCooler.inventory)        -- the client's own copy
 net.client = false
@@ -815,6 +887,35 @@ passed = report("client and server melt the ice to the same point",
 passed = report("  and rebate the same rot", clientFood.age, serverFood.age) and passed
 passed = reportStr("  and label it the same", clientCooler:getName(), serverCooler:getName()) and passed
 passed = reportStr("  which is not the untouched value", clientIce.delta < 1.0, true) and passed
+
+-- The same claim again, with the one thing the old harness assumed away: the two
+-- machines catch their copies up at different moments. A client's food ages when its
+-- inventory pane draws the container; a dedicated server's ages when Food.update()
+-- reaches the item, which is a different clock entirely. If the rebate depended on
+-- where those moments fell - and until 1.4.1 it did, because a lump of ageing was only
+-- ever rebated one pass's worth - the copies would drift apart on their own, with no
+-- packet lost and nothing to blame it on. Neither machine is authoritative here; both
+-- have to arrive at the same number from the same timestamps.
+clock.hours = 0
+net.client = true
+local watchedCooler, _, watchedFood = newIdenticalCooler(0)
+net.client = false
+local unwatchedCooler, _, unwatchedFood = newIdenticalCooler(0)
+
+for minute = 1, 360 do
+    clock.hours = minute / 60.0
+    net.client = true
+    CF.processTopLevel(watchedCooler.inventory)
+    watchedFood:updateAge()                       -- this player has the window open
+    net.client = false
+    CF.processTopLevel(unwatchedCooler.inventory) -- and nothing is looking at this copy
+end
+unwatchedFood:updateAge()                         -- six hours, arriving all at once
+
+passed = report("copies caught up on different clocks still agree",
+    watchedFood.age, unwatchedFood.age, 1e-9) and passed
+passed = report("  at the cooled rate, not the raw one",
+    unwatchedFood.age, 6 * ROT * 0.6, 1e-9) and passed
 
 -- Ticking the same copy twice in the same moment must stay a no-op, or a client and a
 -- server both ticking would count the time twice.

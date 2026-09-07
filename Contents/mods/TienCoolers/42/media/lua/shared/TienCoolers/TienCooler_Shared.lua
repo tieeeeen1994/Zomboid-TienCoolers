@@ -4,9 +4,12 @@
     Build 42 slows food rot only for containers whose parent IsoObject is a powered
     fridge/freezer (Food.updateAge -> isInFridge/isInFreezer + sourceGrid:haveElectricity).
     A cooler carried in your inventory has no parent object, so there is no vanilla hook
-    to hang portable cooling on. Instead this mod measures how much the game aged each
-    item since it last looked at it and gives part of that ageing back, which produces
-    exactly the same result as a slower rot rate and needs no per-tick presence.
+    to hang portable cooling on. Instead this mod asks the game to bring each item's
+    ageing up to date, measures how much it applied since the last pass, and gives part
+    of that ageing back, which produces exactly the same result as a slower rot rate and
+    needs no per-tick presence. Asking first is not a detail: nothing ages food on its
+    own in single player, so left alone the ageing arrives in lumps far larger than the
+    pass that has to rebate them. See CF.ageFood.
 ]]
 
 TienCoolers = TienCoolers or {}
@@ -16,7 +19,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.4.0"
+CF.VERSION = "1.4.1"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -425,6 +428,27 @@ end
 function CF.ageFood(item, factor, dt, rotSpeed, coolerId)
     if not instanceof(item, "Food") then return end
 
+    -- The game does not age food as time passes. It ages food when something asks it
+    -- to, from a timestamp on the item, and in single player the only thing that ever
+    -- asks is ISInventoryPane - once a frame, for whichever container that window
+    -- happens to be drawing:
+    --
+    --     if instanceof(item, 'InventoryItem') then item:updateAge() end
+    --
+    -- (Food.update() does the same, but only `if (GameServer.server)`.) So a cabbage in
+    -- a cooler holds its age for as long as nobody looks and then jumps the whole gap in
+    -- one frame when the player opens their inventory. That lump lands inside a single
+    -- pass of ours, and a pass may only rebate the sliver of rot that could have
+    -- happened since the pass before it - so an hour of rot arriving in a one-minute
+    -- pass was rebated one minute's worth and the other fifty-nine were kept. A cooler
+    -- preserved nothing at all unless the player sat with the inventory window open.
+    --
+    -- So ask for the catch-up here, before measuring. The game's clock for this item is
+    -- then our clock, `aged` is exactly this interval's worth of rot, and the cap below
+    -- goes back to meaning what it says. It is the same call the inventory pane makes,
+    -- so nothing new happens to the item - it just happens on time.
+    item:updateAge()
+
     local md = item:getModData()
     local age = item:getAge()
 
@@ -447,6 +471,10 @@ function CF.ageFood(item, factor, dt, rotSpeed, coolerId)
         local cooled = aged < cap and aged or cap
         age = prev + (aged - cooled) + cooled * factor
         item:setAge(age)
+        -- Food.age is a float and this is a Lua double, so read back what the item
+        -- actually kept. Noting the number we meant to write instead leaves the two a
+        -- rounding apart, and next pass that difference is measured as rot.
+        age = item:getAge()
     end
 
     md.tcAge = age

@@ -35,6 +35,47 @@ That produces exactly the same result as a slower rot rate, needs no per-tick pr
 self-corrects across unloaded chunks and long absences, since the game catches the item up
 when it reloads and the next pass rebates the right share of it.
 
+### Nothing ages food on its own
+
+Measuring only works if the thing being measured happens when you think it does, and food
+rot does not. `Food.age` is not advanced by the passage of time; it is advanced when
+something calls `updateAge()`, which catches the item up from the `lastAged` stamp it
+carries. `Food.update()` will do that - but only on a dedicated server:
+
+```java
+ItemContainer cont = this.getOutermostContainer();
+if (cont != null) {
+    if (GameServer.server) this.updateAge(false);
+```
+
+In single player the one remaining caller is the inventory window's render loop:
+
+```lua
+-- ISInventoryPane.lua, once a frame, for the container it is drawing
+if instanceof(item, 'InventoryItem') then item:updateAge() end
+```
+
+So a cabbage in a cooler in a closed bag is not aged at all while nobody is looking, and
+then jumps the whole gap in a single frame the moment the player opens their inventory.
+That lump lands inside one pass of this mod, and a pass may only rebate `dt * rotSpeed / 24`
+- the rot that could have happened since the pass before it. An hour of rot arriving in a
+one-minute pass was rebated one minute's worth and the other fifty-nine were kept. Builds up
+to 1.4.0 therefore preserved nothing at all unless the player sat with the inventory window
+open: three cabbages, one loose, one in a fridge and one in an iced cooler, came out with the
+loose one and the cooler's at the same age.
+
+`CF.ageFood` calls `item:updateAge()` itself now, before reading the age. The game's clock
+for the item is then the mod's clock, `aged` is exactly that interval's worth of rot, and the
+cap goes back to meaning what it says. It is the same call the inventory pane makes, so
+nothing new happens to the item - it just happens on time. It also makes the mod's own passes
+the sampling points on every machine, which is what keeps a client and a server rebating the
+same rot rather than whichever lumps each of them happened to catch.
+
+`scripts/sim.lua` models the lag rather than the intent: the fake item ages from its own
+`lastAged` when `updateAge()` is called and at no other moment, and the regression test only
+lets the "player" glance at the inventory every ten minutes. A harness that ages food itself,
+neatly in step with the mod's passes, cannot see any of this - which is how it went out.
+
 ### Ice remembers where it has been
 
 The same catch-up needs one extra thing that rot does not, because ice is *destroyed* when
@@ -93,7 +134,8 @@ harness models `setUsedDelta` with the rounding the real one does.
 |---|---|---|---|---|---|---|
 | `getFridgeFactor()` | 0.4 | 0.3 | 0.2 | 0.1 | 0.03 | 0.0 |
 
-The rot speed bounds the rebate (`cap = dt * rotSpeed / 24`). The fridge factor is the far
+The rot speed bounds the rebate (`cap = dt * rotSpeed / 24`, in days, which is the unit
+`Food.age` and `DaysFresh` are both in: `age += delta_hours * getFoodRotSpeed() / 24.0`). The fridge factor is the far
 end of the `CoolStrength` scale: a cooler's rot rate is read off the line between no cooling
 at all and whatever a real fridge manages, `1 - strength * (1 - fridgeFactor)`. A strength of
 1 makes a cooler the equal of a fridge, the default 0.5 gets it half way there (0.6 on a
