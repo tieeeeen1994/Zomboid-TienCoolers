@@ -19,7 +19,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.4.1"
+CF.VERSION = "1.4.2"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -248,6 +248,12 @@ CF.containerIsCold = containerIsCold
 -- CF.processAddress and TienCooler_Server.lua) so its copy - the one that gets saved -
 -- keeps up and the transfers actually happen.
 --
+-- The other half of that is that every machine holding a copy has to actually run the
+-- pass, including the server on bags it is not the authority for. A dedicated server
+-- ages the food in a carried cooler on its own - Food.update() runs `if
+-- (GameServer.server)` - so a copy nobody rebates is a copy rotting at the open-air
+-- rate, and it is the copy that gets saved. See tickCarried in TienCooler_Server.lua.
+--
 -- Nothing below needs an isClient() guard: the vanilla send*/sync* helpers are no-ops
 -- offline, which is how vanilla itself calls them.
 
@@ -318,13 +324,34 @@ function CF.mayTransfer(inventory)
     return CF.ownsContainer(inventory)
 end
 
+-- The player carrying this container, if one is, however deep it is buried: a cooler
+-- inside a backpack on someone's back answers with that someone.
+function CF.carryingPlayer(inventory)
+    if not inventory then return nil end
+    local parent = outermostContainer(inventory):getParent()
+    if not parent or not instanceof(parent, "IsoPlayer") then return nil end
+    return parent
+end
+
 -- True when this machine is the one whose writes to `inventory` will be kept.
 function CF.ownsContainer(inventory)
     if not inventory then return false end
-    if not isClient() then return true end
-    local parent = outermostContainer(inventory):getParent()
-    if not parent then return false end
-    return instanceof(parent, "IsoPlayer") == true and parent:isLocalPlayer() == true
+
+    local carrier = CF.carryingPlayer(inventory)
+
+    -- On a client, what its own player carries and nothing else.
+    if isClient() then
+        return carrier ~= nil and carrier:isLocalPlayer() == true
+    end
+
+    -- Offline every container is this machine's, and on a server so is everything out
+    -- in the world - but not what a *remote* player is carrying. That client ticks its
+    -- own bags (see TienCooler_Client.lua) and the server ticks its copy of them too,
+    -- which is fine for a computation and is two of the item for a transfer. The pass
+    -- converges without anyone being authoritative; only adding and removing has to be
+    -- one machine's job, and there it is the machine holding the bag.
+    if carrier and isServer() and not carrier:isLocalPlayer() then return false end
+    return true
 end
 
 -- Item containers cannot travel over the wire, but "the third container of the second

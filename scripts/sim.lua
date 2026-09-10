@@ -20,6 +20,7 @@ function instanceof(o, c) return o.__cls and o.__cls[c] == true end
 -- mod calls them unguarded; here they record what would have gone over the wire.
 net.packets, net.client, net.players = {}, false, {}
 net.squares, net.vehicles, net.translated = {}, {}, true
+net.server, net.online = false, {}
 
 function net.log(fmt, ...)
     net.packets[#net.packets + 1] = string.format(fmt, ...)
@@ -34,7 +35,10 @@ function net.sent(text)
 end
 
 function isClient() return net.client end
-function isServer() return false end
+-- Most of the tests below model "the server" as simply "not a client", which is all the
+-- ownership rules ever needed. The pass over what players carry is the exception: it is
+-- the one thing that must not also happen in single player, so it asks this instead.
+function isServer() return net.server == true end
 function getTimestampMs() return net.ms or 0 end
 function getSpecificPlayer(num) return net.players[num] end
 function getSquare(x, y, z) return net.squares[x .. "," .. y .. "," .. z] end
@@ -62,14 +66,38 @@ end
 -- Enough of the event and UI plumbing to load the client and server drivers as-is.
 function require(_) end
 function round(v) return v end
+
+-- Both halves of the mod hang off EveryOneMinute now, so an event has to be able to
+-- hold more than one handler. Keeping only the last one silently replaced the client's
+-- sweep with the server's pass over what players carry, and every test below that calls
+-- handlers.EveryOneMinute() would have been testing the wrong half.
 handlers = {}
+local handlerLists = {}
 Events = setmetatable({}, { __index = function(t, name)
-    local slot = { Add = function(fn) handlers[name] = fn end }   -- PZ calls this with a dot
+    local slot = { Add = function(fn)                             -- PZ calls this with a dot
+        local list = handlerLists[name]
+        if not list then
+            list = {}
+            handlerLists[name] = list
+            handlers[name] = function(...)
+                for _, handler in ipairs(list) do handler(...) end
+            end
+        end
+        list[#list + 1] = fn
+    end }
     rawset(t, name, slot)
     return slot
 end })
 ISInventoryPaneContextMenu = { addToolTip = function() return {} end }
-function getNumActivePlayers() return 1 end
+
+-- On a dedicated server there are no active players in the local sense - the client
+-- half's loop runs zero times - but there is a list of everyone connected.
+function getNumActivePlayers() return net.activePlayers or 1 end
+function getOnlinePlayers()
+    local list = net.online or {}
+    return { size = function() return #list end,
+             get = function(_, i) return list[i + 1] end }
+end
 function getPlayerLoot(_) return net.loot end
 
 
@@ -1354,5 +1382,123 @@ clock.hours = 208
 CF.processTopLevel(rainFreezer)
 passed = reportStr("rain barrel water makes an ordinary bag of ice", bagsIn(rainFreezer), 1) and passed
 passed = report("  and is spent doing it", rainWater.amount, 0.0) and passed
+
+-- Scenario: the cooler a player is carrying, seen from the server. A client ticks its
+-- own bags and never asks the server about them, so the server used to leave them
+-- alone entirely - and on a dedicated server that is not the same as nobody looking.
+-- Food.update() runs `if (GameServer.server)`, so the server's copy of the steak in a
+-- carried cooler ages at the open-air rate the whole time with nothing rebating it,
+-- while the client's copy is cooled properly. The server's is the copy that gets saved
+-- and re-sent, so the moment the cooler leaves the player's hands - taken out of a bag
+-- and dropped on the floor, say - it is the one that surfaces, and every hour of
+-- cooling is undone at once.
+clock.hours = 0
+net.packets = {}
+net.loot = { backpacks = {} }
+SandboxVars.FoodRotSpeed = 3
+SandboxVars.TienCoolers.IceLifeHours = 48.0
+SandboxVars.TienCoolers.CoolStrength = nil
+
+-- One cooler, buried in a backpack the way it was reported, in two copies: the one on
+-- the carrying client and the one on the server.
+local function carriedCooler(owner)
+    local pack = newBag("Base.Backpack")
+    local cooler = newBag("Base.Cooler")
+    pack.inventory:add(cooler)
+    local ice = cooler.inventory:AddItem("TienCoolers.IceBag")
+    local steak = newItem("Base.Steak", { InventoryItem = true, Food = true })
+    steak.offAgeMax = 1000
+    cooler.inventory:add(steak)
+    owner.inventory.list = {}
+    owner.inventory:add(pack)
+    return cooler, ice, steak
+end
+
+local mineCooler, mineIce, mineSteak = carriedCooler(me)      -- the client's own copy
+local theirCooler, theirIce, theirSteak = carriedCooler(them) -- the server's copy of it
+net.online = { them }
+
+-- Both copies start from the same baseline, the way they would the moment the ice went
+-- in. Without it the first minute is the one before either machine had a timestamp to
+-- work from, and it is the raw rate on both - true, but not what this is measuring.
+net.client, net.server = true, false
+CF.processTopLevel(me:getInventory())
+net.client, net.server = false, true
+CF.processTopLevel(them:getInventory())
+
+for minute = 1, 360 do
+    clock.hours = minute / 60.0
+
+    net.client, net.server, net.activePlayers = true, false, 1
+    CF.processTopLevel(me:getInventory())          -- the carrying client, every minute
+    mineSteak:updateAge()                          -- and its inventory window is open
+
+    net.client, net.server, net.activePlayers = false, true, 0
+    theirSteak:updateAge()                         -- Food.update(), on every server tick
+    net.ms = net.ms + 60000
+    handlers.EveryOneMinute()
+end
+net.client, net.server, net.activePlayers = false, false, 1
+
+passed = report("the server cools a carried cooler as the client does",
+    theirSteak.age, mineSteak.age, 1e-9) and passed
+passed = report("  at the cooled rate, not the raw one",
+    theirSteak.age, 6 * ROT * 0.6, 1e-9) and passed
+passed = report("  and melts the same ice doing it", theirIce.delta, mineIce.delta) and passed
+passed = reportStr("  and labels its copy the same",
+    theirCooler:getName(), mineCooler:getName()) and passed
+
+-- Which is the whole point: setting the cooler down hands the server's numbers to
+-- everyone. Taking it out of the bag and dropping it is the reported bug, and it is
+-- only a bug because the two copies had drifted - so carry the client's copy the same
+-- hour and check that what the ground says is what the player had been looking at.
+dropOnGround(theirCooler, 900, 900, 0)
+clock.hours = 7
+net.client, net.server = true, false
+CF.processTopLevel(me:getInventory())
+mineSteak:updateAge()
+CF.processTopLevel(theirCooler.inventory)
+passed = report("so setting it down does not fast forward the food",
+    theirSteak.age, mineSteak.age, 1e-9) and passed
+passed = report("  nor hand back ice the player had already spent",
+    theirIce.delta, mineIce.delta) and passed
+passed = report("  and the food is still where the cooled rate says it should be",
+    theirSteak.age, 7 * ROT * 0.6, 1e-9) and passed
+net.client = false
+
+-- The server runs the pass over a carried bag but does not reach into it: two machines
+-- both allowed to add and remove there is two of the item, and the client holding the
+-- bag is the one that gets to do it.
+clock.hours = 0
+net.ms = net.ms + 60000
+local theirSpent = newBag("Base.Cooler")
+local spentBag = theirSpent.inventory:AddItem("TienCoolers.IceBag")
+spentBag.delta = 0.01
+them.inventory.list = {}
+them.inventory:add(theirSpent)
+
+net.client, net.server, net.activePlayers = false, true, 0
+handlers.EveryOneMinute()
+clock.hours = 20
+net.ms = net.ms + 60000
+handlers.EveryOneMinute()
+passed = report("the server melts a remote player's ice", CF.getCharge(spentBag), 0.0) and passed
+passed = reportStr("  but leaves clearing it away to that client",
+    #theirSpent.inventory.list, 1) and passed
+net.client, net.server, net.activePlayers = false, false, 1
+
+-- And none of it happens in single player, where the client half already did the work.
+-- Melting the same bag twice a minute is exactly the double count the shared timestamp
+-- is there to prevent, but it costs nothing to say so.
+clock.hours = 0
+net.ms = net.ms + 60000
+net.online = { me }
+local _, soloIce = carriedCooler(me)
+handlers.EveryOneMinute()                          -- net.server is false: offline
+clock.hours = 24
+net.ms = net.ms + 60000
+CF.processTopLevel(me:getInventory())
+passed = report("offline the ice is only ever melted once", soloIce.delta, 0.5) and passed
+net.online = {}
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")
