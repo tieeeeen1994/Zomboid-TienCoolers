@@ -16,6 +16,15 @@
     "Sandbox_TienCoolers_WaterPerBag": "Water Per Bag of Ice",
     "Sandbox_TienCoolers_WaterPerBag_tooltip": "Units of water consumed per bag of ice produced. Water pools across every container set to freeze in the same fridge, so several small ones can add up to a bag. For scale, a bottle holds 1 unit and a bucket 10.",
 
+    "Sandbox_TienCoolers_TaintedIce": "[BETA] Tainted Ice",
+    "Sandbox_TienCoolers_TaintedIce_tooltip": "Beta feature, off by default. Tainted water freezes into a Bag of Ice (Tainted), which cools food just as well as clean ice but melts into tainted water. When off, tainted water freezes into an ordinary Bag of Ice.",
+
+    "Sandbox_TienCoolers_NeedPlasticBags": "[BETA] Freezing Needs Plastic Bags",
+    "Sandbox_TienCoolers_NeedPlasticBags_tooltip": "Beta feature, off by default. Each bag of ice frozen from water uses up an empty plastic bag or garbage bag from the same freezer, and a spent bag of ice gives one back. When off, bags of ice are made out of water alone.",
+
+    "Sandbox_TienCoolers_CatchMeltwater": "[BETA] Catch Meltwater",
+    "Sandbox_TienCoolers_CatchMeltwater_tooltip": "Beta feature, off by default. Lets a bottle, pot or other water container inside a cooler be set to catch the water from the ice melting beside it. Only water that melts after the container is set is caught, and water with nowhere to go is lost. Clean ice gives clean water and tainted ice gives tainted water. Water that runs out of a bag cannot be frozen back into it.",
+
     "Sandbox_TienCoolers_UseColdpacks": "Cold Packs Work as Ice",
     "Sandbox_TienCoolers_UseColdpacks_tooltip": "Lets the vanilla Cold Pack chill a cooler too, at the strength set below.",
 

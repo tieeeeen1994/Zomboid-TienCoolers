@@ -50,6 +50,30 @@ option TienCoolers.WaterPerBag
     translation = TienCoolers_WaterPerBag,
 }
 
+option TienCoolers.TaintedIce
+{
+    type = boolean,
+    default = false,
+    page = TienCoolers,
+    translation = TienCoolers_TaintedIce,
+}
+
+option TienCoolers.NeedPlasticBags
+{
+    type = boolean,
+    default = false,
+    page = TienCoolers,
+    translation = TienCoolers_NeedPlasticBags,
+}
+
+option TienCoolers.CatchMeltwater
+{
+    type = boolean,
+    default = false,
+    page = TienCoolers,
+    translation = TienCoolers_CatchMeltwater,
+}
+
 option TienCoolers.UseColdpacks
 {
     type = boolean,

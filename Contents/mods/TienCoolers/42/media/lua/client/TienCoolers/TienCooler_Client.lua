@@ -341,6 +341,37 @@ local function onStopFreezing(player, items)
     setFreezing(player, items, false)
 end
 
+--[[ Context menu: catch meltwater ]]
+
+-- The water is poured by the server wherever the cooler is, the player's own inventory
+-- included (see CF.mayCreate), so the mark always goes to the server as well as being set
+-- here for the menu. A carried cooler has no address, and the server looks the container
+-- up in this player's inventory instead.
+local function setCatching(player, items, on)
+    for _, item in ipairs(items) do
+        if on then
+            CF.startCatching(item)
+        else
+            CF.stopCatching(item)
+        end
+
+        if player and isClient() then
+            local args = CF.addressContainer(item:getContainer()) or {}
+            args.item = item:getID()
+            args.on = on
+            sendClientCommand(player, "TienCoolers", "setCatching", args)
+        end
+    end
+end
+
+local function onStartCatching(player, items)
+    setCatching(player, items, true)
+end
+
+local function onStopCatching(player, items)
+    setCatching(player, items, false)
+end
+
 local function collectItems(selected)
     local out = {}
     for _, entry in ipairs(selected) do
@@ -364,10 +395,17 @@ end
 local function onFillInventoryContextMenu(playerNum, context, selected)
     local player = getSpecificPlayer(playerNum)
     local freezable, cancellable, unpowered = {}, {}, {}
+    local catchable, catching = {}, {}
 
     for _, item in ipairs(collectItems(selected)) do
         local container = item:getContainer()
-        if container and CF.isColdContainer(container) then
+        if CF.canCatchMeltwater(item) then
+            if CF.isCatching(item) then
+                catching[#catching + 1] = item
+            else
+                catchable[#catchable + 1] = item
+            end
+        elseif container and CF.isColdContainer(container) then
             if not CF.containerIsCold(container) then
                 -- The right container with the power out. Worth saying so: silence here
                 -- is indistinguishable from the mod being broken.
@@ -382,10 +420,23 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
         end
     end
 
+    if #catchable > 0 then
+        local option = context:addOption(getText("ContextMenu_TienCoolers_Catch"), player,
+            onStartCatching, catchable)
+        tooltipFor(option, getText("Tooltip_TienCoolers_Catch"))
+    end
+
+    if #catching > 0 then
+        context:addOption(getText("ContextMenu_TienCoolers_CancelCatch"), player,
+            onStopCatching, catching)
+    end
+
     if #freezable > 0 then
         local option = context:addOption(getText("ContextMenu_TienCoolers_Freeze"), player,
             onStartFreezing, freezable)
-        tooltipFor(option, getText("Tooltip_TienCoolers_Freeze",
+        local key = CF.opt("NeedPlasticBags", false) and "Tooltip_TienCoolers_FreezeInBags"
+            or "Tooltip_TienCoolers_Freeze"
+        tooltipFor(option, getText(key,
             round(CF.opt("FreezeHours", 7.0), 1), round(CF.opt("WaterPerBag", 5.0), 2)))
     end
 
@@ -396,12 +447,15 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
         -- Water set to freeze does nothing visible until a bag turns up hours later, so
         -- say where it has got to. Short of a bagful is the case worth naming: the water
         -- sits there indefinitely and the freezer looks no different from a broken one.
+        -- So is having the water and nothing to freeze it in.
         local container = cancellable[1]:getContainer()
         if container then
-            local pooled, perBag, remaining = CF.freezeProgress(container)
+            local pooled, perBag, remaining, bags = CF.freezeProgress(container)
             if pooled < perBag then
                 tooltipFor(option, getText("Tooltip_TienCoolers_FreezingShort",
                     round(pooled, 2), round(perBag, 2)))
+            elseif bags == 0 then
+                tooltipFor(option, getText("Tooltip_TienCoolers_NoBags"))
             else
                 tooltipFor(option, getText("Tooltip_TienCoolers_Freezing",
                     round(pooled, 2), round(perBag, 2), round(remaining, 1)))

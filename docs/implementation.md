@@ -180,10 +180,10 @@ is stripped again when the ice runs out or the sandbox option is switched off.
 Contents/mods/TienCoolers/42/
   mod.info, icon.png, poster.png
   media/
-    sandbox-options.txt                        sandbox page + 9 options
-    scripts/TienCooler_items.txt               IceBag item + its ground model
-    textures/Item_TienCoolerIceBag.png         32x32 inventory icon
-    textures/WorldItems/TienCoolerIceBag.png   256x256 world model texture
+    sandbox-options.txt                        sandbox page + 13 options
+    scripts/TienCooler_items.txt               IceBag and IceBagTainted items + their ground models
+    textures/Item_TienCoolerIceBag*.png        32x32 inventory icons, clean and tainted
+    textures/WorldItems/TienCoolerIceBag*.png  256x256 world model textures, clean and tainted
     lua/shared/TienCoolers/                    cooling, melting and freezing logic
     lua/client/TienCoolers/                    event driver + context menu
     lua/server/TienCoolers/                    freezer loot + the world-container driver
@@ -252,15 +252,27 @@ two of the item:
 | cooling, melting, refreezing, rot rebate, the label | every machine, on its own copy |
 | the same for a cooler a player carries | that player's client, which reports the result to the server (see below) |
 | turning water into bags of ice | whoever owns the container (`CF.mayTransfer`) |
-| clearing away a spent bag of ice | the same (`CF.destroyIce`) |
-| adding and removing items generally | the owner: your own inventory, else the server |
+| clearing away a spent bag of ice | the owner (`CF.destroyIce`), unless `CF.serverClearsIce` says otherwise |
+| the same with plastic bags or meltwater on, handing back a plastic bag | the server, or the game offline, wherever the bag is (`CF.mayCreate`) |
+| pouring meltwater into a catching container | the same |
 
-That second and third row are the same rule, and missing either half of it shows up the
-same way: a client that deletes a spent bag out of a freezer it does not own takes it
-away from the server too, and if the player is lifting a bag out at that moment the two
-cross - the client keeps drawing a bag the server no longer has, and clicking it does
-nothing. A spent bag left in place is harmless: its charge is zero, so it cools nothing,
-and the owner clears it on its own next pass.
+The last two rows are the server's even in a player's own inventory, and that is not a
+preference. `sendAddItemToContainer` and `sendItemStats` only do anything on a server
+(both check `GameServer.server` and nothing else), so a plastic bag a client hands back,
+or water it pours into a bottle, exists on that client alone: the server never saves it,
+and moving it later asks the server for an item it has never heard of. Removal alone
+would work from a client, since `sendRemoveItemFromContainer` does have a client branch,
+but it cannot be split from handing the bag back. A client that removed a spent bag
+itself would leave the server with nothing to notice was spent. So `CF.serverClearsIce`
+moves the removal to the server whenever something only a server can do goes with it:
+`NeedPlasticBags` or `CatchMeltwater` is on, or the bag noted a plastic bag to return.
+With both options off and nothing owed, removal stays with the owner exactly as it was in
+1.4.3, which is why a server with the new options off behaves as it did before.
+
+A spent bag left in place is harmless: its charge is zero, so it cools nothing, and
+whoever may clear it does so on their next pass. A client that sees ice run out in a
+freezer it does not own leaves it for the server, and with those options on it does the
+same for a cooler it carries.
 
 A client that sees water finish freezing in a base freezer therefore leaves the flag set
 and makes nothing; the server does it, and the new bag arrives by the ordinary container
@@ -403,6 +415,86 @@ It cannot reproduce the real server's failure, since the harness's server comput
 numbers the client does, so what it pins is the new rule: the saved copy holds the client's
 numbers.
 
+### Tainted ice, plastic bags and meltwater
+
+Added in 1.5.0. Three rules, all of them about the bag of ice being a sealed bag of water,
+and each behind its own sandbox option: `TaintedIce`, `NeedPlasticBags` and
+`CatchMeltwater`. They ship as a beta, labelled [BETA] on the sandbox page, and all three
+are off by default, so a save updated to 1.5.0 plays exactly as it did on 1.4.3 until they
+are switched on.
+
+#### Tainted ice
+
+Freezing is not filtering, so water that goes in tainted comes out tainted, and it is a
+separate item, `TienCoolers.IceBagTainted`. It cools exactly as well as clean ice and is
+registered in `CF.IceSources` at the same power. A second item rather than a flag on the
+first means nothing has to survive the wire for the player to tell them apart, and a bag
+found in a store freezer, or made before 1.5.0, is simply the clean kind.
+
+With `TaintedIce` off, all water freezes into the ordinary bag and pools together, as it
+did before. With it on, a container is tainted when it holds any `TaintedWater` at all
+(`CF.TaintedFluids`), and `CF.processFreezing` pools clean and tainted water apart:
+
+1. clean water makes clean bags, as many as it can;
+2. whatever clean water is left short of a bag joins the tainted water, and the bags that
+   makes are tainted, drawing the tainted water first and topping up with clean.
+
+So a freezer never makes fewer bags than it did before 1.5.0 (the total is still
+`floor(pool / WaterPerBag)`), and clean water is only spoiled when there was not enough of
+it for a clean bag.
+
+#### Plastic bags
+
+With `NeedPlasticBags` on, every bag of ice made from water uses up one empty
+bag from the same freezer. `CF.PlasticBags` lists every vanilla item that shows up as a
+Plastic Bag or a Garbage Bag, eleven in all, with an order of use: plastic first, garbage
+bags last. Only bags holding nothing count. Short of bags the water keeps waiting, already
+frozen for as long as it needs, and turns to ice as soon as a bag is put in with it; the
+*Stop Freezing* tooltip says so rather than leaving the freezer looking broken.
+
+The bag of ice notes what it was frozen in (`tcWrap`), and `CF.destroyIce` hands that back
+when the ice is spent. A bag with no note, from loot or from an older build, gives back a
+plain `Base.Plasticbag`, but only while the option is on, so switching it off cannot turn
+found ice into free plastic bags. A bag that did note one gives it back either way, since
+the plastic bag was paid for. Cold packs are not water and leave nothing.
+
+#### Meltwater
+
+With `CatchMeltwater` on, a container inside a cooler can be marked to catch meltwater
+(`tcCatch`, *Catch Meltwater*). Off, `CF.canCatchMeltwater` refuses every container, so the
+menu offers nothing and the server ignores the command, and `CF.settleIce` pours nothing,
+even into a container marked while the option was on. The mark only means anything in a
+cooler: `CF.processItem` never sees a cooler's contents, so anything it does see has been
+taken out, and it clears the mark.
+
+Only water melting while something is set to catch it is poured. Water that melted
+before the container was set, and water that finds no room, is simply lost, and nothing
+is kept for later: setting a bottle does not bring back what melted before it. So a pass
+pours exactly what it melted, and no pouring state is carried from one pass to the next.
+
+The one number that is carried is `tcDrained`, how much of a bagful has run out of the bag
+into a container for good. A bag can only refreeze to `1 - tcDrained` (`CF.iceCapacity`,
+used by `CF.refreeze`). Without it a player could let half a bag run into a bottle,
+refreeze it to full for nothing and do it again, which is a freezer that makes water.
+Water that was lost rather than poured does not count, so a bag nobody has caught water
+from refreezes exactly as it always did.
+
+`CF.settleIce` runs at the end of every cooler pass, handed what each bag melted in that
+pass (`consumeIce` returns it). It pours each bag's melt into the catching containers in
+the order they sit, as far as they have room, at `WaterPerBag` units to a bagful, and then
+clears away any bag with nothing left frozen. Pouring first means a bag that runs out
+empties its last water before it goes. A cooler sitting in a freezer, or seen for the
+first time, melted nothing and pours nothing.
+
+Both halves are the server's (see the table above). For a world cooler that is the
+server's own pass. For a cooler a player carries, which the server leaves to the client's
+report, `onCarried` calls `CF.settleIce` after writing in the reported charges, handing it
+how far each charge fell on the server's own copy, so the water poured is the server's
+reckoning of what melted and never a number the client sent.
+The mark reaches the server by a `setCatching` command, which finds the container by its
+address or, for a carried cooler that has none, in the asking player's own inventory and
+nowhere else.
+
 ### Tracing it
 
 `CF.DEBUG` in the shared file turns on a line a minute from each machine, which is what
@@ -431,6 +523,8 @@ Other mods can register their own gear:
 ```lua
 TienCoolers.CoolerBags["MyMod.BigCooler"] = true
 TienCoolers.IceSources["MyMod.IcePack"] = 0.6   -- 1.0 == one full bag of ice
+TienCoolers.Meltwater["MyMod.IcePack"] = "Water" -- melts into this fluid, by name
+TienCoolers.PlasticBags["MyMod.ZipBag"] = 1     -- freezes ice; lower numbers used first
 ```
 
 ## Naming
@@ -456,7 +550,7 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 `scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
 files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
 behaviour along with container ownership, addressing, what goes on the wire and the
-client-to-server round trip, 170 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+client-to-server round trip, tainted ice, plastic bags and meltwater, 238 checks in all. Run it from `scripts/` with any Lua 5.4 host,
 or with `lupa` from Python:
 
 ```

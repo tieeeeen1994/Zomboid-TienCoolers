@@ -12,6 +12,13 @@ module TienCoolers
         scale = 0.4,
     }
 
+    model TienCoolerIceBagTainted_Ground
+    {
+        mesh = WorldItems/Clothing/PlasticBag_Ground,
+        texture = WorldItems/TienCoolerIceBagTainted,
+        scale = 0.4,
+    }
+
     item IceBag
     {
         DisplayCategory = Camping,
@@ -22,5 +29,17 @@ module TienCoolers
         Icon = TienCoolerIceBag,
         WorldStaticModel = TienCoolerIceBag_Ground,
         Tooltip = Tooltip_TienCoolerIceBag,
+    }
+
+    item IceBagTainted
+    {
+        DisplayCategory = Camping,
+        ItemType = base:drainable,
+        Weight = 1.6,
+        UseDelta = 0.02,
+        UseWhileEquipped = false,
+        Icon = TienCoolerIceBagTainted,
+        WorldStaticModel = TienCoolerIceBagTainted_Ground,
+        Tooltip = Tooltip_TienCoolerIceBagTainted,
     }
 }

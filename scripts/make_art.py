@@ -1,4 +1,5 @@
 """Generate all Tien's Coolers art assets."""
+import colorsys
 import math
 import os
 import random
@@ -187,6 +188,59 @@ def ice_bag_world_texture():
     tw = d.textlength(text, font=font)
     d.text((FACE_CENTRE - tw / 2, 112), text, font=font, fill=(232, 246, 255))
     return img
+
+
+# --------------------------------------------------------------------------
+# Bag of Ice (Tainted): the clean art, recoloured.
+# --------------------------------------------------------------------------
+
+# The tainted bag is the clean one with the ice turned murky brown, shading and all, so the
+# two read as the same item at a glance. The printed ICE label and the bag's outline keep
+# their colours; only the ice changes. It is made from the clean textures as they are on
+# disk, not from ice_bag_icon(): the inventory icon in the mod is a different drawing from
+# the one that function makes.
+TAINTED_HUE = 38
+TAINTED_SAT = 1.0
+TAINTED_VAL = 0.92
+
+# The icon's outline, the label band and its lettering, by colour: none of them is used
+# anywhere else in the icon.
+ICON_KEEP = {(36, 66, 102), (24, 60, 96), (38, 90, 136), (255, 255, 255)}
+
+# The world texture's printed band, where ice_bag_world_texture() paints it.
+WORLD_BAND = (0, 96, 163, 160)
+
+
+def rehue(img, keep, hue=TAINTED_HUE, sat=TAINTED_SAT, val=TAINTED_VAL):
+    """Move every pixel keep() does not claim to one hue, keeping its saturation and brightness."""
+    mode = img.mode
+    out = img.convert("RGBA")
+    px = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            r, g, b, a = px[x, y]
+            if a == 0 or keep(x, y, (r, g, b)):
+                continue
+            _, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            nr, ng, nb = colorsys.hsv_to_rgb(hue / 360, min(1.0, s * sat), v * val)
+            px[x, y] = (round(nr * 255), round(ng * 255), round(nb * 255), a)
+    return out.convert(mode)
+
+
+def make_tainted():
+    """The Bag of Ice (Tainted) icon and world texture, recoloured from the clean ones."""
+    def icon_keep(x, y, rgb):
+        return rgb in ICON_KEEP
+
+    def world_keep(x, y, rgb):
+        x0, y0, x1, y1 = WORLD_BAND
+        return x0 <= x <= x1 and y0 <= y <= y1
+
+    for name, keep in (("Item_TienCoolerIceBag.png", icon_keep),
+                       (os.path.join("WorldItems", "TienCoolerIceBag.png"), world_keep)):
+        clean = Image.open(os.path.join(TEX, name))
+        tainted = name.replace("TienCoolerIceBag", "TienCoolerIceBagTainted")
+        rehue(clean, keep).save(ensure(os.path.join(TEX, tainted)))
 
 
 # --------------------------------------------------------------------------
@@ -429,6 +483,8 @@ def main():
 
     world = ice_bag_world_texture()
     world.save(ensure(os.path.join(TEX, "WorldItems", "TienCoolerIceBag.png")))
+
+    make_tainted()
 
     scene = model_scene(512)
     banner(512, "TIEN'S COOLERS", "Portable Cold Storage", 44, 20,
