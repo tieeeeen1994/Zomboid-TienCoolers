@@ -250,6 +250,7 @@ two of the item:
 | what | who |
 | --- | --- |
 | cooling, melting, refreezing, rot rebate, the label | every machine, on its own copy |
+| the same for a cooler a player carries | that player's client, which reports the result to the server (see below) |
 | turning water into bags of ice | whoever owns the container (`CF.mayTransfer`) |
 | clearing away a spent bag of ice | the same (`CF.destroyIce`) |
 | adding and removing items generally | the owner: your own inventory, else the server |
@@ -319,8 +320,11 @@ Changes that do need transmitting use the vanilla helpers, which do nothing offl
 is why they are called unguarded: `sendItemStats` for a bag of ice's remaining charge,
 `syncItemModData` for a Cold Pack's (it has no used-delta of its own), `syncItemFields` for
 the *(Iced)* suffix, and `sendAddItemToContainer` / `sendRemoveItemFromContainer` for bags
-of ice that are created or used up. Bookkeeping modData needs no packet: it is only ever
-read by the machine that wrote it, and it travels with the item when the item is moved.
+of ice that are created or used up. Bookkeeping modData needs no packet of its own, but it
+does not stay on the machine that wrote it either: `syncItemFields` sends an item's entire
+modData along with its name, and the receiving side wipes its own and takes the sender's.
+So every label change carries one machine's cooler timestamps into the other's copy. That
+is the reason carried coolers are reported rather than recomputed, below.
 
 Freezing water is started from a client's context menu but always finishes in a fridge or a
 freezer, so the flag is set locally for the menu's benefit and sent on with a `setFreezing`
@@ -342,6 +346,62 @@ for a modded key - `getText` there hands back `IGUI_TienCoolers_Iced` itself.
 name on the item rather than a flag in its modData (modData crosses the wire, a custom name
 does not always follow), and recognises a name stamped with the raw key so it can repair it
 instead of labelling it twice.
+
+### What a player carries
+
+The model has one gap, and it is the player's own inventory. The server keeps a copy of
+everything a player carries, and that copy matters in two places. It is the one written to
+the player database, so it is what the player loads at their next login. And B42 performs
+every transfer on the server: taking a steak out of a cooler removes the server's steak from
+the server's cooler and sends it to the client (`Transaction` then
+`AddInventoryItemToContainer`), and the client draws that steak from then on.
+
+1.4.2 kept that copy level by running the cooling pass over carried bags on the server as
+well. On a real dedicated server it did not hold. Log out with food in a carried cooler,
+stay away for a few days and log back in: the food looks right in the cooler, and the moment
+it is taken out it jumps as if it had never been cooled. Two machines computing the same
+thing agree only while nothing else touches the bookkeeping they compute from, and for a
+cooler something does. `syncItemFields`, which carries the *(Iced)* label, sends the item's
+entire modData, and `SyncItemFieldsPacket` wipes the receiver's modData and copies the
+sender's in. Every label change moves one machine's `tcLast` and `tcId` into the other
+machine's copy, and a login after a long absence, when the ice may have run out and both
+machines relabel the cooler, is where that is most likely to go wrong.
+
+Since 1.4.3 a carried cooler is the carrying client's to compute. After its own pass the
+client sends a `carried` report (`CF.reportCarried`), at once on the first pass and every
+ten real seconds after that: for each cooler it carries, the cooler's id and `tcId`, the age
+of every piece of food inside and the charge of every cold source. The server's `onCarried`
+looks each cooler up in that player's own inventory and nowhere else, brings its copy of the
+food up to date, and writes the reported numbers in, along with the bookkeeping (`tcAge`,
+`tcCooler`, `tcLast`) that the client's first pass after the next login starts from. The
+server's own pass over carried inventories still runs for loose ice and freezing marks, but
+it passes over coolers (`CF.leaveCoolers`), so it no longer sends the owning client anything
+about them.
+
+A report is the client's word, so the server holds it to what a cooler could have done:
+
+| reported | accepted between |
+| --- | --- |
+| age of a piece of food | the server's own copy aged at the open-air rate, and that less the most the best cooler could have saved since the server last heard about this food (`tcReported`), or at most an hour for food it has not heard about yet |
+| charge of a cold source | zero and the charge the server's copy already holds, since nothing a player carries is in a freezer |
+
+Charges are written with `CF.storeCharge`, which sends nothing back. Answering with
+`sendItemStats` would round the charge on the way: `ItemStatsPacket` applies it as
+`(int)(maxUses * usedDelta)`, which lands a whole use low at several charges, and the
+client would take the rounded value as a correction.
+
+A second fix belongs with this one. `CF.ageFood` skips food that is already rotten, and it
+used to ask `isRotten()` after catching the item up. The catch-up after a long absence
+arrives in one lump, so a lump that carried food past its rotten mark skipped the very
+rebate that should have kept it short of the mark. It now skips only food that was rotten
+at the previous look.
+
+The sim covers this end to end: a session with reports, a logout that saves the server's
+copy, an absence with and without the ice running out, a login that loads the same copy on
+both machines, and a steak taken out afterwards that has to match the one the player saw.
+It cannot reproduce the real server's failure, since the harness's server computes the same
+numbers the client does, so what it pins is the new rule: the saved copy holds the client's
+numbers.
 
 ### Tracing it
 
@@ -396,7 +456,7 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 `scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
 files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
 behaviour along with container ownership, addressing, what goes on the wire and the
-client-to-server round trip, 91 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+client-to-server round trip, 170 checks in all. Run it from `scripts/` with any Lua 5.4 host,
 or with `lupa` from Python:
 
 ```

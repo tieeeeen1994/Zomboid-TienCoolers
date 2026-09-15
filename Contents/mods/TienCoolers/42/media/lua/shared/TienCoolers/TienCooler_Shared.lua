@@ -19,7 +19,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.4.2"
+CF.VERSION = "1.4.3"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -173,7 +173,13 @@ function CF.getCharge(item)
     return md.tcCharge
 end
 
-function CF.setCharge(item, value)
+-- The charge, without telling anyone. The server uses this for what a client reports
+-- about its own bags, where sending the number straight back would be worse than
+-- useless: ItemStatsPacket applies a drainable's charge as `(int)(maxUses * usedDelta)`,
+-- which truncates, and at several charges (0.98, 0.92, 0.8 among them) that lands a whole
+-- use below the one sent. CF.getCharge reads a gap of more than a step as a correction, so
+-- the client's bag can lose a use each time the server answers it.
+function CF.storeCharge(item, value)
     if value < 0 then value = 0 end
     if value > 1 then value = 1 end
 
@@ -181,6 +187,14 @@ function CF.setCharge(item, value)
 
     if instanceof(item, "DrainableComboItem") then
         item:setUsedDelta(value)   -- the bar the player sees, to the nearest use
+    end
+    return value
+end
+
+function CF.setCharge(item, value)
+    value = CF.storeCharge(item, value)
+
+    if instanceof(item, "DrainableComboItem") then
         CF.syncCharge(item)
     else
         CF.syncModData(item)
@@ -248,11 +262,12 @@ CF.containerIsCold = containerIsCold
 -- CF.processAddress and TienCooler_Server.lua) so its copy - the one that gets saved -
 -- keeps up and the transfers actually happen.
 --
--- The other half of that is that every machine holding a copy has to actually run the
--- pass, including the server on bags it is not the authority for. A dedicated server
--- ages the food in a carried cooler on its own - Food.update() runs `if
--- (GameServer.server)` - so a copy nobody rebates is a copy rotting at the open-air
--- rate, and it is the copy that gets saved. See tickCarried in TienCooler_Server.lua.
+-- What a player carries is the one place that model is not enough. The server's copy of
+-- a carried cooler is the one that gets saved when the player logs out, and B42 moves
+-- items on the server and sends the result back, so taking a steak out of the cooler
+-- hands the player the server's steak. That copy has to hold the carrying client's
+-- numbers, not merely numbers worked out the same way, so the client reports them and
+-- the server writes them in. See CF.reportCarried and onCarried in TienCooler_Server.lua.
 --
 -- Nothing below needs an isClient() guard: the vanilla send*/sync* helpers are no-ops
 -- offline, which is how vanilla itself calls them.
@@ -478,14 +493,20 @@ function CF.ageFood(item, factor, dt, rotSpeed, coolerId)
 
     local md = item:getModData()
     local age = item:getAge()
+    local prev = md.tcAge
 
-    if item:isFrozen() or item:isRotten() or item:getOffAgeMax() >= 1000000000 then
+    -- Rotten food has nothing left to save, but only food that was rotten the last time we
+    -- looked. A player back from a few days away brings the whole absence in one lump, and
+    -- when that lump carries a steak past its rotten mark, asking isRotten() now would skip
+    -- the rebate that should have kept it short of the mark: the steak stays rotten for good.
+    local wasRotten = item:isRotten() and not (prev ~= nil and prev < item:getOffAgeMax())
+
+    if item:isFrozen() or wasRotten or item:getOffAgeMax() >= 1000000000 then
         md.tcAge = age
         md.tcCooler = coolerId
         return
     end
 
-    local prev = md.tcAge
     if prev == nil or md.tcCooler ~= coolerId or age < prev then
         md.tcAge = age
         md.tcCooler = coolerId
@@ -888,6 +909,42 @@ function CF.processCooler(coolerItem, isCold)
     end
 end
 
+-- What the client carrying these coolers has worked out about them, as ids and numbers
+-- so it survives the wire: for each cooler, the age of every piece of food in it and the
+-- charge of every cold source. Run it after the pass, so every cooler has its id and
+-- every number is the settled one. Coolers inside bags are found the same way the pass
+-- finds them.
+function CF.reportCarried(inventory, depth, coolers)
+    coolers = coolers or {}
+    depth = depth or 0
+    if not inventory or depth > MAX_NESTING then return coolers end
+
+    local list = inventory:getItems()
+    for i = 0, list:size() - 1 do
+        local item = list:get(i)
+        if CF.isCoolerBag(item) then
+            local tag = item:getModData().tcId
+            local inside = item:getInventory()
+            if tag and inside then
+                local entries = {}
+                local contents = inside:getItems()
+                for j = 0, contents:size() - 1 do
+                    local content = contents:get(j)
+                    if CF.icePower(content) then
+                        entries[#entries + 1] = { id = content:getID(), charge = CF.getCharge(content) }
+                    elseif instanceof(content, "Food") then
+                        entries[#entries + 1] = { id = content:getID(), age = content:getAge() }
+                    end
+                end
+                coolers[#coolers + 1] = { id = item:getID(), tag = tag, items = entries }
+            end
+        elseif item:IsInventoryContainer() then
+            CF.reportCarried(item:getInventory(), depth + 1, coolers)
+        end
+    end
+    return coolers
+end
+
 --[[ Traversal ]]
 
 -- Whether the pass currently running found anything this mod owns work for: a cooler, a
@@ -920,13 +977,18 @@ function CF.processContainer(inventory, isCold, depth)
     end
 end
 
+-- Set by the server while it walks what a remote player carries. The coolers in there
+-- are that player's client's to work out and report (see onCarried in
+-- TienCooler_Server.lua), so the walk passes them by. nil everywhere else.
+CF.leaveCoolers = nil
+
 -- One item's worth of work. A cooler has to go through processCooler rather than have
 -- its contents walked, or the ice inside it melts at the out-in-the-open rate and the
 -- food inside it never gets its rot rebated.
 function CF.processItem(item, isCold, depth)
     if CF.isCoolerBag(item) then
         noteWork()
-        CF.processCooler(item, isCold)
+        if not CF.leaveCoolers then CF.processCooler(item, isCold) end
     elseif CF.icePower(item) then
         noteWork()
         CF.tickIce(item, isCold)
