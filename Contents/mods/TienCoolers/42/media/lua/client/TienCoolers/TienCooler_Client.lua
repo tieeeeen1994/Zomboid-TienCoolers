@@ -16,6 +16,9 @@
     The server is nudged separately for containers this client does not own, so that
     its copy - the one that gets saved, and the only one allowed to turn water into ice
     - keeps up. Offline that nudge never happens and nothing changes.
+
+    Coolers this client's player carries go the other way: the client works them out
+    and reports the numbers, and the server writes them into its copy. See reportCarried.
 ]]
 
 require "TienCoolers/TienCooler_Shared"
@@ -194,6 +197,30 @@ local function sweepNearby(playerNum, player)
         x, y, z, tally.containers, tally.cold, tally.dropped)
 end
 
+--[[ Reporting what the player carries ]]
+
+-- The server keeps its own copy of every cooler this player carries, and that copy is
+-- the one saved at logout and the one a transfer hands back. It cannot be trusted to work
+-- the numbers out for itself (see onCarried in TienCooler_Server.lua), so this client
+-- tells it. Every ten real seconds, and at once on the first pass, which after a login is
+-- the pass that settles however long the player was away.
+local REPORT_MS = 10000
+local lastReport = {}   -- by player number, like the sweep
+
+local function reportCarried(playerNum, player)
+    if not isClient() then return end
+
+    local now = getTimestampMs()
+    local last = lastReport[playerNum]
+    if last and now - last < REPORT_MS then return end
+
+    local coolers = CF.reportCarried(player:getInventory())
+    if #coolers == 0 then return end
+
+    lastReport[playerNum] = now
+    sendClientCommand(player, "TienCoolers", "carried", { coolers = coolers })
+end
+
 --[[ Version handshake ]]
 
 -- Half of this mod runs on the server, and a dedicated server only picks up a new
@@ -241,6 +268,7 @@ local function onEveryOneMinute()
         if player then
             if playerNum == 0 then checkServerVersion(player) end
             CF.processTopLevel(player:getInventory())
+            reportCarried(playerNum, player)
             sweepNearby(playerNum, player)
 
             local loot = getPlayerLoot(playerNum)
