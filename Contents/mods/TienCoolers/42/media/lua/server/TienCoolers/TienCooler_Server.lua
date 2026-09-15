@@ -1,11 +1,14 @@
 --[[
     Tien's Coolers - server driver.
 
-    A client owns what its own player carries: it is the machine allowed to add and
-    remove things there. Everything else - a freezer, a cooler on a shelf, a car trunk -
-    is owned by the server, because only the server's copy of those items is the one
-    that gets saved. Clients ask, this file does the work, and the results go back out
-    through the same send*/sync* helpers the shared code uses everywhere else.
+    A client owns what its own player carries. Everything else - a freezer, a cooler on a
+    shelf, a car trunk - is owned by the server, because only the server's copy of those
+    items is the one that gets saved. Clients ask, this file does the work, and the
+    results go back out through the same send*/sync* helpers the shared code uses
+    everywhere else. Creating an item or pouring fluid is the server's everywhere, the
+    player's own inventory included, because B42 only sends those from a server (see
+    CF.mayCreate): the plastic bags spent ice leaves and meltwater. With either of those
+    options on, clearing spent bags of ice away is the server's everywhere too.
 
     What a player carries is saved on the server too, though, and a transfer hands the
     player the server's copy of whatever moved. So the server keeps its copy of carried
@@ -113,12 +116,14 @@ end
 
 -- Ice in a carried cooler only melts: nothing a player carries is sitting in a freezer.
 -- So the client's charge is taken as long as it is no more than the server's copy holds.
+-- Returns how much of a bagful that melted, which is the water there is to pour.
 local function acceptCharge(item, reported, now)
     local current = CF.getCharge(item)
-    CF.storeCharge(item, reported < current and reported or current)
+    local accepted = CF.storeCharge(item, reported < current and reported or current)
     local md = item:getModData()
     md.tcLast = now
     md.tcCold = false
+    return current - accepted
 end
 
 local function onCarried(player, args)
@@ -138,19 +143,48 @@ local function onCarried(player, args)
             md.tcId = report.tag
             md.tcLast = now
 
+            local melts = {}
             for _, entry in ipairs(report.items) do
                 -- Anything not found has just been moved, and the next report covers it.
                 local item = type(entry) == "table" and isNumber(entry.id)
                     and inside:getItemWithID(entry.id) or nil
                 if item then
                     if isNumber(entry.charge) and CF.icePower(item) then
-                        acceptCharge(item, entry.charge, now)
+                        melts[#melts + 1] = { item = item, amount = acceptCharge(item, entry.charge, now) }
                     elseif isNumber(entry.age) and instanceof(item, "Food") then
                         acceptAge(item, entry.age, report.tag, since, now)
                     end
                 end
             end
+
+            -- The client works out the melting but cannot pour the water or hand back a
+            -- plastic bag where the server will keep them (see CF.mayCreate), so that
+            -- happens here, from the charges just accepted. The water poured is what the
+            -- server's own copy lost to them, never a number the client sent.
+            CF.settleIce(inside, melts)
         end
+    end
+end
+
+-- Setting a container to catch meltwater, asked for by a client. The container is found
+-- in the world by its address, or in the asking player's own inventory when it has none,
+-- which is every cooler that player is carrying.
+local function onSetCatching(player, args)
+    if not isNumber(args.item) then return end
+
+    local item = nil
+    local container = CF.resolveContainer(args)
+    if container then
+        item = container:getItemWithID(args.item)
+    elseif player then
+        item = player:getInventory():getItemWithIDRecursiv(args.item)
+    end
+    if not item then return end
+
+    if args.on and CF.canCatchMeltwater(item) then
+        CF.startCatching(item)
+    elseif not args.on then
+        CF.stopCatching(item)
     end
 end
 
@@ -201,6 +235,8 @@ local function onClientCommand(module, command, player, args)
     elseif command == "setFreezing" then
         local container = CF.resolveContainer(args)
         if container then onSetFreezing(container, args) end
+    elseif command == "setCatching" and type(args) == "table" then
+        onSetCatching(player, args)
     elseif command == "version" then
         sendServerCommand(player, "TienCoolers", "version", { v = CF.VERSION })
     end

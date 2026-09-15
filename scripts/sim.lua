@@ -4,6 +4,8 @@
 local clock = { hours = 0 }
 
 GameTime = { getInstance = function() return { getWorldAgeHours = function() return clock.hours end } end }
+-- Tainted ice, plastic bags and meltwater are all off by default, and tested with them
+-- switched on near the end. Everything before that plays the game as it was before them.
 SandboxVars = { FoodRotSpeed = 3, TienCoolers = {} }
 function getClimateManager() return { getTemperature = function() return 20.0 end } end
 function ZombRand(n) return 12345 end
@@ -460,7 +462,7 @@ local bottle = newItem("Base.WaterBottleFull", { InventoryItem = true })
 bottle.amount = 12.5
 bottle.fluid = {
     getAmount = function() return bottle.amount end,
-    contains = function() return true end,
+    contains = function(_, f) return f == "Water" end,
     removeFluid = function(_, v) bottle.amount = bottle.amount - v end,
 }
 freezer2:add(bottle)
@@ -483,7 +485,7 @@ local function newGlass(amount)
     glass.amount = amount
     glass.fluid = {
         getAmount = function() return glass.amount end,
-        contains = function() return true end,
+        contains = function(_, f) return f == "Water" end,
         removeFluid = function(_, v) glass.amount = glass.amount - v end,
     }
     return glass
@@ -749,7 +751,7 @@ local jug = newItem("Base.WaterBottleFull", { InventoryItem = true })
 jug.amount = 5.0
 jug.fluid = {
     getAmount = function() return jug.amount end,
-    contains = function() return true end,
+    contains = function(_, f) return f == "Water" end,
     removeFluid = function(_, v) jug.amount = jug.amount - v end,
 }
 fridge:add(jug)
@@ -991,7 +993,7 @@ local sharedJug = newItem("Base.WaterBottleFull", { InventoryItem = true })
 sharedJug.amount = 5.0
 sharedJug.fluid = {
     getAmount = function() return sharedJug.amount end,
-    contains = function() return true end,
+    contains = function(_, f) return f == "Water" end,
     removeFluid = function(_, v) sharedJug.amount = sharedJug.amount - v end,
 }
 sharedFreezer:add(sharedJug)
@@ -1091,12 +1093,16 @@ clock.hours = 8
 net.ms = net.ms + SWEEP_GAP
 handlers.EveryOneMinute()
 
-function bagsIn(container)
+function countType(container, fullType)
     local n = 0
     for _, it in ipairs(container.list) do
-        if it:getFullType() == "TienCoolers.IceBag" then n = n + 1 end
+        if it:getFullType() == fullType then n = n + 1 end
     end
     return n
+end
+
+function bagsIn(container)
+    return countType(container, "TienCoolers.IceBag")
 end
 
 passed = reportStr("the sweep freezes water with no loot window at all", bagsIn(sweptFreezer), 2) and passed
@@ -1412,6 +1418,8 @@ CF.processTopLevel(rainFreezer)
 clock.hours = 208
 CF.processTopLevel(rainFreezer)
 passed = reportStr("rain barrel water makes an ordinary bag of ice", bagsIn(rainFreezer), 1) and passed
+passed = reportStr("  while tainted ice is switched off",
+    countType(rainFreezer, "TienCoolers.IceBagTainted"), 0) and passed
 passed = report("  and is spent doing it", rainWater.amount, 0.0) and passed
 
 -- Scenario: the cooler a player is carrying, seen from the server. The server holds a copy
@@ -1677,5 +1685,406 @@ passed = report("offline the ice is only ever melted once", soloIce.delta, 0.5) 
 passed = reportStr("  and nothing is reported to a server that is not there",
     net.sent("command:carried"), 0) and passed
 net.online = {}
+
+-- ---------------------------------------------------------------------------
+-- 1.5.0: tainted ice, plastic bags and meltwater.
+-- ---------------------------------------------------------------------------
+-- In a function of its own: the main chunk has run out of room for locals.
+function checkIceAndMeltwater()
+
+-- A fluid container that can hold more than one fluid and take more in, the way B42's
+-- does. Its state lives on the container table and every method works through self, so
+-- copyItem gives a copy its own water rather than a window onto the original's.
+function newFluidHolder(fullType, capacity, contents)
+    local item = newItem(fullType, { InventoryItem = true })
+    local fc = { capacity = capacity, fluids = {} }
+    for name, amount in pairs(contents or {}) do fc.fluids[name] = amount end
+    function fc:getAmount()
+        local total = 0
+        for _, amount in pairs(self.fluids) do total = total + amount end
+        return total
+    end
+    function fc:contains(f) return (self.fluids[f] or 0) > 0 end
+    function fc:getFreeCapacity() return self.capacity - self:getAmount() end
+    function fc:canAddFluid(f) return f == "Water" or f == "TaintedWater" end
+    function fc:addFluid(f, v) self.fluids[f] = (self.fluids[f] or 0) + v end
+    function fc:removeFluid(v)
+        local total = self:getAmount()
+        if total <= 0 then return end
+        for name, amount in pairs(self.fluids) do
+            self.fluids[name] = amount - v * amount / total
+        end
+    end
+    item.fluid = fc
+    return item
+end
+
+local function amountOf(item, name)
+    return item.fluid.fluids[name] or 0
+end
+
+local function newMenu()
+    local menu = { options = {} }
+    function menu:addOption(text, target, callback, args)
+        local option = { text = text, target = target, callback = callback, args = args }
+        table.insert(self.options, option)
+        return option
+    end
+    function menu:find(text)
+        for _, option in ipairs(self.options) do
+            if option.text == text then return option end
+        end
+        return nil
+    end
+    return menu
+end
+
+clock.hours = 1000
+net.client, net.server, net.activePlayers = false, false, 1
+net.packets = {}
+SandboxVars.TienCoolers.FreezeHours = 7.0
+SandboxVars.TienCoolers.WaterPerBag = 5.0
+SandboxVars.TienCoolers.IceLifeHours = 48.0
+
+-- All three are opt-in. A save that has not switched them on gets none of it.
+passed = reportStr("tainted ice is off by default", CF.opt("TaintedIce", false), false) and passed
+passed = reportStr("plastic bags are off by default", CF.opt("NeedPlasticBags", false), false) and passed
+passed = reportStr("meltwater is off by default", CF.meltwaterEnabled(), false) and passed
+
+SandboxVars.TienCoolers.TaintedIce = true
+SandboxVars.TienCoolers.CatchMeltwater = true
+
+local function freezeAll(freezer, holders)
+    for _, holder in ipairs(holders) do
+        freezer:add(holder)
+        CF.startFreezingWater(holder)
+    end
+    CF.processTopLevel(freezer)
+    clock.hours = clock.hours + 8
+    CF.processTopLevel(freezer)
+end
+
+-- Clean water makes clean bags first, and only what is left short of a bag joins the
+-- tainted water. Seven clean and four tainted: one clean bag, then the four tainted units
+-- topped up with one clean make a tainted one, and the last clean unit is left waiting.
+local splitFreezer = newContainer("freezer", true)
+local splitClean = newFluidHolder("Base.BucketWood", 10, { Water = 7.0 })
+local splitDirty = newFluidHolder("Base.BucketWood", 10, { TaintedWater = 4.0 })
+freezeAll(splitFreezer, { splitClean, splitDirty })
+passed = reportStr("clean water makes a clean bag first", bagsIn(splitFreezer), 1) and passed
+passed = reportStr("  and the rest goes in with the tainted water",
+    countType(splitFreezer, "TienCoolers.IceBagTainted"), 1) and passed
+passed = report("  which uses the tainted water up first", splitDirty.fluid:getAmount(), 0.0) and passed
+passed = report("  so as little clean water as possible is spoiled", splitClean.fluid:getAmount(), 1.0) and passed
+passed = reportStr("  and what is left keeps waiting", CF.isFreezingWater(splitClean), true) and passed
+
+-- Three and three is only one bag between them, and it has to be the tainted kind.
+local shortFreezer = newContainer("freezer", true)
+freezeAll(shortFreezer, { newFluidHolder("Base.BucketWood", 10, { Water = 3.0 }),
+                          newFluidHolder("Base.BucketWood", 10, { TaintedWater = 3.0 }) })
+passed = reportStr("clean water short of a bag is not frozen clean", bagsIn(shortFreezer), 0) and passed
+passed = reportStr("  but still counts towards a tainted one",
+    countType(shortFreezer, "TienCoolers.IceBagTainted"), 1) and passed
+
+-- A drop of tainted water makes the whole container tainted.
+local mixedFreezer = newContainer("freezer", true)
+freezeAll(mixedFreezer, { newFluidHolder("Base.BucketWood", 10, { Water = 4.9, TaintedWater = 0.1 }) })
+passed = reportStr("a container with any tainted water in it is tainted",
+    countType(mixedFreezer, "TienCoolers.IceBagTainted"), 1) and passed
+
+-- Plastic bags. Water with nothing to freeze in waits, and says why.
+SandboxVars.TienCoolers.NeedPlasticBags = true
+local bagFreezer = newWorldContainer(900, 900, 0, "freezer", true)
+local bagWater = newFluidHolder("Base.BucketWood", 10, { Water = 10.0 })
+freezeAll(bagFreezer, { bagWater })
+passed = reportStr("no plastic bag, no ice", bagsIn(bagFreezer), 0) and passed
+passed = report("  and the water is kept", bagWater.fluid:getAmount(), 10.0) and passed
+passed = reportStr("  and still waiting", CF.isFreezingWater(bagWater), true) and passed
+local _, _, _, bagCount = CF.freezeProgress(bagFreezer)
+passed = reportStr("  with no bags counted", bagCount, 0) and passed
+
+local noBagsMenu = newMenu()
+handlers.OnFillInventoryObjectContextMenu(0, noBagsMenu, { bagWater })
+local stopOption = noBagsMenu:find("ContextMenu_TienCoolers_CancelFreeze")
+passed = reportStr("  and the menu says what is missing",
+    stopOption and stopOption.toolTip and stopOption.toolTip.description, "Tooltip_TienCoolers_NoBags") and passed
+
+-- A bag with something in it is not an empty bag.
+local fullBag = newBag("Base.Plasticbag")
+fullBag.inventory:add(newItem("Base.Plank", { InventoryItem = true }))
+bagFreezer:add(fullBag)
+clock.hours = clock.hours + 1
+CF.processTopLevel(bagFreezer)
+passed = reportStr("a plastic bag with something in it does not count", bagsIn(bagFreezer), 0) and passed
+
+-- Garbage bags go last, whatever order they were put in.
+local garbage = bagFreezer:add(newBag("Base.Garbagebag"))
+local grocery = bagFreezer:add(newBag("Base.GroceryBag3"))
+clock.hours = clock.hours + 1
+CF.processTopLevel(bagFreezer)
+passed = reportStr("an empty grocery bag is used first", countType(bagFreezer, "Base.GroceryBag3"), 0) and passed
+passed = reportStr("  then the garbage bag", countType(bagFreezer, "Base.Garbagebag"), 0) and passed
+passed = reportStr("  one bag of ice each", bagsIn(bagFreezer), 2) and passed
+passed = report("  and all the water", bagWater.fluid:getAmount(), 0.0) and passed
+local wraps = {}
+for _, it in ipairs(bagFreezer.list) do
+    if it:getFullType() == CF.ICE_BAG then wraps[#wraps + 1] = it.md.tcWrap end
+end
+passed = reportStr("  each remembering what it was frozen in",
+    table.concat(wraps, ","), "Base.GroceryBag3,Base.Garbagebag") and passed
+
+-- Every vanilla bag named Plastic Bag or Garbage Bag counts.
+local allBags = newContainer("freezer", true)
+local kinds = 0
+for fullType in pairs(CF.PlasticBags) do
+    allBags:add(newBag(fullType))
+    kinds = kinds + 1
+end
+passed = reportStr("every plastic and garbage bag counts", #CF.emptyPlasticBags(allBags), 11) and passed
+passed = reportStr("  which is all of them", kinds, 11) and passed
+
+-- Meltwater. A clean bag in a cooler with a bucket set to catch it: a day melts half the
+-- bag, and half a bag of water runs into the bucket.
+local function icedCooler(iceType, catcher)
+    local cooler = newBag("Base.Cooler")
+    local ice = cooler.inventory:AddItem(iceType or CF.ICE_BAG)
+    local top = newContainer("bag")
+    top:add(cooler)
+    if catcher then
+        cooler.inventory:add(catcher)
+        CF.startCatching(catcher)
+    end
+    CF.processTopLevel(top)
+    return cooler, ice, top
+end
+
+clock.hours = 2000
+local meltBucket = newFluidHolder("Base.BucketWood", 10, {})
+local meltCooler, meltIce, meltTop = icedCooler(CF.ICE_BAG, meltBucket)
+clock.hours = 2024
+CF.processTopLevel(meltTop)
+passed = report("a day of melting fills the bucket with half a bag", amountOf(meltBucket, "Water"), 2.5) and passed
+passed = report("  of clean water", amountOf(meltBucket, "TaintedWater"), 0.0) and passed
+passed = report("  and the bag knows that water has gone", meltIce.md.tcDrained, 0.5) and passed
+passed = reportStr("  and the bucket's new level goes out", net.sent("stats:Base.BucketWood") > 0, true) and passed
+
+-- Water that ran out cannot be frozen back in. A bag that kept its water can.
+local refreezer = newContainer("freezer", true)
+meltCooler.inventory:Remove(meltIce)
+refreezer:add(meltIce)
+local sealedIce = refreezer:AddItem(CF.ICE_BAG)
+sealedIce.delta = 0.5
+CF.processTopLevel(refreezer)
+clock.hours = 2040
+CF.processTopLevel(refreezer)
+passed = report("a drained bag refreezes only what it kept", CF.getCharge(meltIce), 0.5) and passed
+passed = report("  while one that kept its water refreezes whole", CF.getCharge(sealedIce), 1.0) and passed
+
+-- Tainted ice melts into tainted water.
+clock.hours = 3000
+local dirtyBucket = newFluidHolder("Base.BucketWood", 10, {})
+local _, _, dirtyTop = icedCooler(CF.ICE_BAG_TAINTED, dirtyBucket)
+clock.hours = 3024
+CF.processTopLevel(dirtyTop)
+passed = report("tainted ice melts into tainted water", amountOf(dirtyBucket, "TaintedWater"), 2.5) and passed
+passed = report("  and none of it clean", amountOf(dirtyBucket, "Water"), 0.0) and passed
+
+-- A container that fills up takes what fits, and the rest stays in the bag.
+clock.hours = 4000
+local cup = newFluidHolder("Base.WaterBottle", 1, {})
+local _, cupIce, cupTop = icedCooler(CF.ICE_BAG, cup)
+clock.hours = 4024
+CF.processTopLevel(cupTop)
+passed = report("a full bottle takes what fits", cup.fluid:getAmount(), 1.0) and passed
+passed = report("  and only that has left the bag", cupIce.md.tcDrained, 0.2) and passed
+clock.hours = 4048
+CF.processTopLevel(cupTop)
+passed = report("  the rest that melts is lost", cup.fluid:getAmount(), 1.0) and passed
+passed = report("  and the bag can still refreeze all but what ran out", CF.iceCapacity(cupIce), 0.8) and passed
+
+-- Water that melted before a bucket was set is gone. Only what melts afterwards is caught,
+-- and the bag still refreezes the lost part, since none of it ran out.
+clock.hours = 4200
+local lateBucket = newFluidHolder("Base.BucketWood", 10, {})
+local lateCooler, lateIce, lateTop = icedCooler(CF.ICE_BAG)
+clock.hours = 4224
+CF.processTopLevel(lateTop)
+lateCooler.inventory:add(lateBucket)
+CF.startCatching(lateBucket)
+CF.processTopLevel(lateTop)
+passed = report("a bucket set late gets none of the water that melted before",
+    lateBucket.fluid:getAmount(), 0.0) and passed
+clock.hours = 4236
+CF.processTopLevel(lateTop)
+passed = report("  only what melts after it was set", lateBucket.fluid:getAmount(), 1.25) and passed
+passed = report("  and the bag can refreeze everything but that", CF.iceCapacity(lateIce), 0.75) and passed
+
+-- With meltwater switched off, a marked bucket catches nothing and the menu offers nothing.
+SandboxVars.TienCoolers.CatchMeltwater = false
+clock.hours = 4500
+local offBucket = newFluidHolder("Base.BucketWood", 10, {})
+local _, offIce, offTop = icedCooler(CF.ICE_BAG, offBucket)
+clock.hours = 4524
+CF.processTopLevel(offTop)
+passed = report("meltwater off: a marked bucket stays empty", offBucket.fluid:getAmount(), 0.0) and passed
+passed = reportStr("  and the bag drains nothing", offIce.md.tcDrained, nil) and passed
+local offMenu = newMenu()
+handlers.OnFillInventoryObjectContextMenu(0, offMenu, { offBucket })
+passed = reportStr("  and Catch Meltwater is not offered",
+    offMenu:find("ContextMenu_TienCoolers_Catch") ~= nil, false) and passed
+SandboxVars.TienCoolers.CatchMeltwater = true
+
+-- Nothing catching, nothing drained: the bag behaves exactly as it always did.
+clock.hours = 5000
+local _, plainIce, plainTop = icedCooler(CF.ICE_BAG)
+clock.hours = 5024
+CF.processTopLevel(plainTop)
+passed = reportStr("with nothing catching, nothing drains", plainIce.md.tcDrained, nil) and passed
+
+-- A spent bag pours the last of its water, then gives back what it was frozen in.
+clock.hours = 6000
+local lastBucket = newFluidHolder("Base.BucketWood", 10, {})
+local spentCooler, spentIce, spentTop = icedCooler(CF.ICE_BAG, lastBucket)
+spentIce.md.tcWrap = "Base.Garbagebag"
+clock.hours = 6060
+CF.processTopLevel(spentTop)
+passed = report("a spent bag has run out whole", lastBucket.fluid:getAmount(), 5.0) and passed
+passed = reportStr("  is cleared away", bagsIn(spentCooler.inventory), 0) and passed
+passed = reportStr("  and leaves the garbage bag it was frozen in",
+    countType(spentCooler.inventory, "Base.Garbagebag"), 1) and passed
+
+clock.hours = 7000
+local lootCooler, _, lootTop = icedCooler(CF.ICE_BAG)
+clock.hours = 7060
+CF.processTopLevel(lootTop)
+passed = reportStr("a bag with no record of one leaves a plastic bag",
+    countType(lootCooler.inventory, CF.PLASTIC_BAG), 1) and passed
+
+SandboxVars.TienCoolers.NeedPlasticBags = false
+clock.hours = 8000
+local freeCooler, _, freeTop = icedCooler(CF.ICE_BAG)
+clock.hours = 8060
+CF.processTopLevel(freeTop)
+passed = reportStr("  unless bags are switched off", #freeCooler.inventory.list, 0) and passed
+SandboxVars.TienCoolers.NeedPlasticBags = true
+
+-- A cold pack is gel, not water, and leaves nothing behind.
+clock.hours = 8500
+local packBucket = newFluidHolder("Base.BucketWood", 10, {})
+local _, packItem, packTop = icedCooler("Base.Coldpack", packBucket)
+clock.hours = 8524
+CF.processTopLevel(packTop)
+passed = report("a melting cold pack pours nothing", packBucket.fluid:getAmount(), 0.0) and passed
+passed = reportStr("  and drains nothing", packItem.md.tcDrained, nil) and passed
+
+-- The mark only means something in a cooler. Taken out, the bottle stops catching.
+local outside = newContainer("bag")
+spentCooler.inventory:Remove(lastBucket)
+outside:add(lastBucket)
+CF.processTopLevel(outside)
+passed = reportStr("a bucket taken out of the cooler stops catching", CF.isCatching(lastBucket), false) and passed
+
+-- The menu offers it in a cooler and nowhere else.
+local inCoolerMenu = newMenu()
+local offered = newFluidHolder("Base.WaterBottle", 1, {})
+lootCooler.inventory:add(offered)
+handlers.OnFillInventoryObjectContextMenu(0, inCoolerMenu, { offered })
+passed = reportStr("a bottle in a cooler is offered Catch Meltwater",
+    inCoolerMenu:find("ContextMenu_TienCoolers_Catch") ~= nil, true) and passed
+local outMenu = newMenu()
+handlers.OnFillInventoryObjectContextMenu(0, outMenu, { lastBucket })
+passed = reportStr("  one outside a cooler is not",
+    outMenu:find("ContextMenu_TienCoolers_Catch") ~= nil, false) and passed
+
+-- Multiplayer, a cooler the player carries. The client works the melting out and reports
+-- it; the server pours the water and hands back the bag, because a client cannot create
+-- anything the server will keep.
+clock.hours = 9000
+net.ms = net.ms + 60000
+net.packets = {}
+net.online = { them }
+local mpCooler, mpIce = carriedCooler(me)
+local mpBucket = mpCooler.inventory:add(newFluidHolder("Base.BucketWood", 10, {}))
+loadInventory(them, saveInventory(me))
+
+net.client, net.server = true, false
+local mpMenu = newMenu()
+handlers.OnFillInventoryObjectContextMenu(0, mpMenu, { mpBucket })
+local catchOption = mpMenu:find("ContextMenu_TienCoolers_Catch")
+catchOption.callback(catchOption.target, catchOption.args)
+passed = reportStr("catching in a carried cooler is set at once", CF.isCatching(mpBucket), true) and passed
+passed = reportStr("  and the server is told", net.lastCommand and net.lastCommand.command, "setCatching") and passed
+
+net.client, net.server = false, true
+handlers.OnClientCommand("TienCoolers", "setCatching", them, net.lastCommand.args)
+passed = reportStr("  and marks its own copy, found in that player's inventory",
+    CF.isCatching(find(them, mpBucket)), true) and passed
+net.client, net.server = false, false
+
+bothMinute(9000)
+net.ms = net.ms + 10000
+bothMinute(9024)
+passed = report("the client pours nothing itself", mpBucket.fluid:getAmount(), 0.0) and passed
+passed = report("  the server pours what the report says melted",
+    find(them, mpBucket).fluid:getAmount(), 2.5) and passed
+
+net.ms = net.ms + 10000
+net.packets = {}
+bothMinute(9060)
+passed = reportStr("the client leaves the spent bag", find(me, mpIce) ~= nil, true) and passed
+passed = reportStr("  the server clears it away", find(them, mpIce), nil) and passed
+passed = report("  after pouring the last of it", find(them, mpBucket).fluid:getAmount(), 5.0) and passed
+passed = reportStr("  and hands back a plastic bag",
+    countType(find(them, mpCooler).inventory, CF.PLASTIC_BAG), 1) and passed
+passed = reportStr("  sending both to the client",
+    net.sent("remove:TienCoolers.IceBag") == 1 and net.sent("add:Base.Plasticbag") == 1, true) and passed
+
+-- With plastic bags or meltwater on, a client does not clear a spent bag it carries: the
+-- server does, because it is the one machine able to hand back a plastic bag with it. That
+-- includes a loose bag outside any cooler.
+clock.hours = 9100
+net.ms = net.ms + 60000
+net.packets = {}
+local looseMp = newItem(CF.ICE_BAG, { InventoryItem = true, DrainableComboItem = true })
+looseMp.delta = 0.01
+them.inventory.list = {}
+them.inventory:add(looseMp)
+net.client, net.server, net.activePlayers = false, true, 0
+handlers.EveryOneMinute()
+clock.hours = 9120
+net.ms = net.ms + 60000
+handlers.EveryOneMinute()
+passed = reportStr("options on: the server clears a remote player's spent loose ice",
+    #them.inventory.list, 1) and passed
+passed = reportStr("  handing back a plastic bag in its place",
+    countType(them.inventory, CF.PLASTIC_BAG), 1) and passed
+net.client, net.server, net.activePlayers = true, false, 1
+local clientLoose = newItem(CF.ICE_BAG, { InventoryItem = true, DrainableComboItem = true })
+me.inventory.list = {}
+me.inventory:add(clientLoose)
+clientLoose.delta = 0.0
+net.packets = {}
+CF.destroyIce(clientLoose)
+passed = reportStr("  and a client leaves its own spent bag for the server",
+    net.sent("remove:TienCoolers.IceBag"), 0) and passed
+net.client, net.server = false, false
+
+-- A catch request cannot reach into someone else's inventory.
+local foreign = newPlayer(3, false)
+local _, _, _ = carriedCooler(foreign)
+local foreignBucket = foreign.inventory.list[1].inventory.list[1].inventory:add(
+    newFluidHolder("Base.BucketWood", 10, {}))
+net.client, net.server = false, true
+handlers.OnClientCommand("TienCoolers", "setCatching", them, { item = foreignBucket:getID(), on = true })
+passed = reportStr("  and nobody can mark another player's bucket", CF.isCatching(foreignBucket), false) and passed
+net.client, net.server = false, false
+net.players[3] = nil
+net.online = {}
+SandboxVars.TienCoolers.TaintedIce = nil
+SandboxVars.TienCoolers.NeedPlasticBags = nil
+SandboxVars.TienCoolers.CatchMeltwater = nil
+
+end
+checkIceAndMeltwater()
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

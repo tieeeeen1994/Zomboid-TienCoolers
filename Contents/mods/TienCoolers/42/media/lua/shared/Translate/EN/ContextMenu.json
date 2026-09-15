@@ -1,4 +1,6 @@
 {
     "ContextMenu_TienCoolers_Freeze": "Freeze Into Ice",
-    "ContextMenu_TienCoolers_CancelFreeze": "Stop Freezing Into Ice"
+    "ContextMenu_TienCoolers_CancelFreeze": "Stop Freezing Into Ice",
+    "ContextMenu_TienCoolers_Catch": "Catch Meltwater",
+    "ContextMenu_TienCoolers_CancelCatch": "Stop Catching Meltwater"
 }

@@ -1,8 +1,8 @@
 name=Tien's Coolers
 id=TienCoolers
-description=A cooler packed with ice preserves the food inside it half as well as a working refrigerator, anywhere you carry it, with no power required. Adds a Bag of Ice, found in freezers or made by freezing water yourself.
+description=A cooler packed with ice preserves the food inside it half as well as a working refrigerator, anywhere you carry it, with no power required. Adds a Bag of Ice, found in freezers or made by freezing water yourself. Version 1.5.0 adds tainted ice, plastic bags for freezing and meltwater collection as beta features, off by default in the sandbox settings.
 author=Tien
-modversion=1.4.3
+modversion=1.5.0
 poster=poster.png
 icon=icon.png
 category=Items
