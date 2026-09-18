@@ -1,8 +1,8 @@
 # Tien's Coolers
 
-## New in 1.5.0: beta features, off by default
+## New in 1.5.*: beta features, off by default
 
-Version 1.5.0 adds three new features as a beta. All of them are **off by default**, so the
+Version 1.5 adds three new features as a beta. All of them are **off by default**, so the
 mod plays exactly as it did before until they are switched on in the sandbox settings,
 where each one is marked [BETA].
 
@@ -14,6 +14,8 @@ where each one is marked [BETA].
   and choose *Catch Meltwater*, and the water from the melting ice runs into it until it is
   full. Water that melts while nothing is set to catch it is lost, and water that has run
   out of a bag cannot be frozen back into it.
+
+Please report any bugs if you found one. Thank you!
 
 ## About the mod
 
@@ -27,9 +29,9 @@ chilled items are tinted blue.
 A full bag lasts about two days inside a cooler, melts much faster outside one and runs out
 sooner in hot weather. A melted bag refreezes in a powered freezer.
 
-Bags of Ice are found in freezers. To make your own, right-click clean or tainted water in a
-powered refrigerator or freezer and choose *Freeze Into Ice*. Water set to freeze in the
-same fridge adds up, and a bag is ready after seven hours.
+Bags of Ice can be found in freezers. To make your own, right-click water in
+any powered fridge or freezer, chest freezers included, and choose *Freeze Into Ice*. Water
+set to freeze in the same container adds up, and a bag is ready after seven hours.
 
 The vanilla Cold Pack also chills a cooler, at a lower strength than ice.
 

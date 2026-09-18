@@ -92,6 +92,13 @@ end
 local function process(player, inventory)
     if not inventory then return "empty" end
 
+    -- A "nearby items" pane from one of the inventory mods is a listing of things that
+    -- live in other containers, all of which this same loop reaches on their own. Walking
+    -- it reads a freezer's contents as if they were out in the open - see
+    -- CF.isUIContainer - so it is skipped here rather than deeper down, which also spares
+    -- the server a nudge for a container it cannot look up.
+    if CF.isUIContainer(inventory) then return "skipped, a UI listing" end
+
     local work = CF.processTopLevel(inventory)
 
     if not player or CF.ownsContainer(inventory) then return "mine" end
@@ -285,7 +292,8 @@ local function onEveryOneMinute()
 
                 local parts = {}
                 for _, key in ipairs({ "ticked, server nudged", "ticked, floor nudged",
-                                       "ticked, no nudge", "empty" }) do
+                                       "ticked, no nudge", "ticked, nothing to nudge",
+                                       "skipped, a UI listing", "empty" }) do
                     if counts[key] then parts[#parts + 1] = counts[key] .. " " .. key end
                 end
                 if #parts > 0 then

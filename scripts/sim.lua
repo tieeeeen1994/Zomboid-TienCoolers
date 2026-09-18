@@ -139,8 +139,21 @@ function Container:getItems()
     }
 end
 function Container:getType() return self.kind end
-function Container:isFridge() return self.kind == "fridge" end
+
+-- ItemContainer.isFreezer is a plain string compare against "freezer" and nothing else:
+-- no property fallback, so a freezer that named its container something else answers
+-- false. isFridge has one - the IsFridge sprite property on the parent object - and
+-- answers false for anything isFreezer already claimed. Both are copied from the B42
+-- bytecode rather than guessed, because the difference between them is the reason a
+-- container type alone is not enough to find every freezer.
 function Container:isFreezer() return self.kind == "freezer" end
+function Container:isFridge()
+    if self:isFreezer() then return false end
+    if self.kind == "fridge" then return true end
+    local parent = self.parent
+    local props = parent and parent.getProperties and parent:getProperties()
+    return props ~= nil and props:has("IsFridge") == true
+end
 function Container:isPowered() return self.powered end
 function Container:Remove(item)
     for i, v in ipairs(self.list) do
@@ -148,6 +161,13 @@ function Container:Remove(item)
     end
 end
 function Container:AddItem(fullType)
+    -- ItemContainer.AddItem answers nil rather than raising when it will not take the
+    -- item. `addLimit` is how many more it will accept, for testing what the mod does
+    -- when the answer is no.
+    if self.addLimit then
+        if self.addLimit <= 0 then return nil end
+        self.addLimit = self.addLimit - 1
+    end
     local it = newItem(fullType, { InventoryItem = true, DrainableComboItem = true })
     it.delta = 1.0
     it.container = self
@@ -243,12 +263,21 @@ function dropOnGround(item, x, y, z)
     return item
 end
 
-function newWorldContainer(x, y, z, kind, powered)
+-- `props` are the sprite properties of the object the container hangs off, which is how
+-- the game says "this thing is refrigeration" for anything that does not also happen to
+-- have named its container "fridge" or "freezer". A chest freezer is Freezer with no
+-- container property at all; a butcher's display case is IsFridge with a container
+-- property of its own.
+function newWorldContainer(x, y, z, kind, powered, props)
     local container = newContainer(kind, powered)
     local square = squareAt(x, y, z)
 
     local object = { containers = { container } }
     function object:getSquare() return square end
+    function object:getProperties()
+        if not props then return nil end
+        return { has = function(_, name) return props[name] == true end }
+    end
     function object:getContainerIndex(c)
         for i, v in ipairs(self.containers) do
             if v == c then return i - 1 end
@@ -1241,6 +1270,106 @@ handlers.EveryOneMinute()
 passed = reportStr("a shelf of junk is never handed to the server", net.sent("command:tick"), 0) and passed
 net.client = false
 
+-- The "nearby items" pane several inventory mods add is a listing, not a place: it
+-- gathers the items out of every container within reach and shows them in one pane. The
+-- pane is not a freezer, so a pass that walks it reads a freezer's contents as if they
+-- were out in the open - and since the pane and the real container are both buttons in
+-- the same loot window, both get walked in the same pass and the later one wins.
+--
+-- The listing shares item references rather than copying them (getItems():addAll), so the
+-- items still name their real container. Putting them in with Container:add would reparent
+-- them and hide exactly the thing being tested, so they go straight into the list.
+local function newListing(kind, items)
+    local listing = newContainer(kind, false)
+    for _, item in ipairs(items) do table.insert(listing.list, item) end
+    return listing
+end
+
+clock.hours = 0
+local listedFreezer = newContainer("freezer", true)
+local listedWater = newWaterHolder(10.0)
+listedFreezer:add(listedWater)
+CF.startFreezingWater(listedWater)
+local listedBag = listedFreezer:AddItem("TienCoolers.IceBag")
+CF.setCharge(listedBag, 0.5)
+CF.processTopLevel(listedFreezer)
+
+CF.processTopLevel(newListing("proxInv", { listedWater, listedBag }))
+passed = reportStr("a nearby-items listing leaves water marked to freeze alone",
+    CF.isFreezingWater(listedWater), true) and passed
+passed = reportStr("  and does not tell the ice it was out in the open",
+    listedBag:getModData().tcCold, true) and passed
+
+-- Every type string the listings go by, so that having one of these mods installed is not
+-- quietly the same as not having the mod.
+for _, kind in ipairs({ "proxInv", "local", "proximityInv", "twistInv_corpses" }) do
+    passed = reportStr("  the same for a listing of type " .. kind,
+        CF.processTopLevel(newListing(kind, { listedWater, listedBag })), false) and passed
+end
+
+-- And the whole way round: the loot window shows the listing after the real freezer, so
+-- the listing is the later writer and the water it has already paid for is the water at
+-- risk. Seven units makes one bag and leaves two still waiting on the next one.
+clock.hours = 0
+local paneFreezer = newWorldContainer(520, 520, 0, "freezer", true)
+local paneWater = newWaterHolder(7.0)
+paneFreezer:add(paneWater)
+CF.startFreezingWater(paneWater)
+
+me:setCurrentSquare(squareAt(520, 521, 0))
+net.loot = { backpacks = { { inventory = paneFreezer },
+                           { inventory = newListing("proxInv", { paneWater }) } } }
+clock.hours = 8
+net.ms = net.ms + SWEEP_GAP
+handlers.EveryOneMinute()
+
+passed = reportStr("the loot window's listing does not undo the freezer's own pass",
+    bagsIn(paneFreezer), 1) and passed
+passed = reportStr("  and the water left over is still waiting on the next bag",
+    CF.isFreezingWater(paneWater), true) and passed
+net.loot = { backpacks = {} }
+
+-- Every freezer, not only the upright fridge. A chest freezer carries the Freezer tile
+-- property and no container property at all, so the game types its one container
+-- "freezer" and it answers isFreezer(). What the container type alone cannot catch is an
+-- object that names its container something of its own *and* is refrigeration - a
+-- butcher's display case in the base game, and whatever a furniture mod invents - so the
+-- object's own sprite properties are read as well.
+clock.hours = 0
+local chestFreezer = newWorldContainer(530, 530, 0, "freezer", true)
+passed = reportStr("a chest freezer is a cold container", CF.containerIsCold(chestFreezer), true) and passed
+
+local oddFreezer = newWorldContainer(531, 531, 0, "somemodscrate", true, { Freezer = true })
+passed = reportStr("so is one whose container the tile named itself",
+    CF.containerIsCold(oddFreezer), true) and passed
+
+local displayCase = newWorldContainer(532, 532, 0, "displaycasebutcher", true, { IsFridge = true })
+passed = reportStr("so is a refrigerated display case", CF.containerIsCold(displayCase), true) and passed
+
+local iceCream = newWorldContainer(533, 533, 0, "icecream", true)
+passed = reportStr("so is an ice cream freezer", CF.containerIsCold(iceCream), true) and passed
+
+-- The other half of that has to keep holding: an ordinary cupboard is not refrigeration
+-- because it stands next to one, and an unpowered freezer is still the right kind of
+-- container - the context menu needs those apart to say "the power is out".
+local plainShelf = newWorldContainer(534, 534, 0, "shelves", true)
+passed = reportStr("a shelf is not a cold container", CF.isColdContainer(plainShelf), false) and passed
+
+local deadFreezer = newWorldContainer(535, 535, 0, "somemodscrate", false, { Freezer = true })
+passed = reportStr("an unpowered one is still the right kind of container",
+    CF.isColdContainer(deadFreezer), true) and passed
+passed = reportStr("  but is not cold", CF.containerIsCold(deadFreezer), false) and passed
+
+-- The point of all that: water freezes in one.
+local oddWater = newWaterHolder(10.0)
+oddFreezer:add(oddWater)
+CF.startFreezingWater(oddWater)
+CF.processTopLevel(oddFreezer)
+clock.hours = 8
+CF.processTopLevel(oddFreezer)
+passed = reportStr("and water set to freeze in one becomes ice", bagsIn(oddFreezer), 2) and passed
+clock.hours = 0
+
 -- Ice remembers where it has been. The elapsed gap belongs to the container the bag sat
 -- in through it, not to whatever it is being held in at the instant somebody finally
 -- looks: a bag lifted out of a freezer nobody had ticked for two days would otherwise
@@ -1842,6 +1971,35 @@ for fullType in pairs(CF.PlasticBags) do
 end
 passed = reportStr("every plastic and garbage bag counts", #CF.emptyPlasticBags(allBags), 11) and passed
 passed = reportStr("  which is all of them", kinds, 11) and passed
+
+-- A container that will not take the ice. Nothing may be spent on a bag that was never
+-- made: the water stays, the plastic bag stays, and the mark stays so the next pass can
+-- try again. This is the same answer as running out of plastic bags, and for the same
+-- reason - the mod never destroys what it cannot replace.
+local refusing = newContainer("freezer", true)
+refusing.addLimit = 0
+local refusedWater = newFluidHolder("Base.BucketWood", 10, { Water = 10.0 })
+refusing:add(newBag("Base.Plasticbag"))
+refusing:add(newBag("Base.Plasticbag"))
+freezeAll(refusing, { refusedWater })
+
+passed = reportStr("a container that refuses the ice makes none", bagsIn(refusing), 0) and passed
+passed = report("  and the water is not spent", refusedWater.fluid:getAmount(), 10.0) and passed
+passed = reportStr("  nor the plastic bags", countType(refusing, "Base.Plasticbag"), 2) and passed
+passed = reportStr("  and it is still waiting", CF.isFreezingWater(refusedWater), true) and passed
+
+-- Room for one of the two. What was built is paid for and nothing else is.
+local partRoom = newContainer("freezer", true)
+partRoom.addLimit = 1
+local partWater = newFluidHolder("Base.BucketWood", 10, { Water = 10.0 })
+partRoom:add(newBag("Base.Plasticbag"))
+partRoom:add(newBag("Base.Plasticbag"))
+freezeAll(partRoom, { partWater })
+
+passed = reportStr("room for one bag makes one", bagsIn(partRoom), 1) and passed
+passed = report("  and spends one bag's worth of water", partWater.fluid:getAmount(), 5.0) and passed
+passed = reportStr("  and one plastic bag", countType(partRoom, "Base.Plasticbag"), 1) and passed
+passed = reportStr("  with the rest still waiting", CF.isFreezingWater(partWater), true) and passed
 
 -- Meltwater. A clean bag in a cooler with a bucket set to catch it: a day melts half the
 -- bag, and half a bag of water runs into the bucket.

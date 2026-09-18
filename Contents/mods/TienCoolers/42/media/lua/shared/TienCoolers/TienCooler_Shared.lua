@@ -19,7 +19,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.5.0"
+CF.VERSION = "1.5.1"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -296,13 +296,51 @@ function CF.chill(item, target)
     end
 end
 
+-- Container type strings the game itself treats as refrigerated. ItemContainer.isFreezer
+-- is a plain string compare against "freezer" and nothing else, so anything the base game
+-- or a mod names differently has to be listed rather than inferred.
+CF.ColdContainerTypes = {
+    fridge = true,
+    freezer = true,
+    icecream = true,
+}
+
+-- Whether the world object a container belongs to is refrigeration, asked of the sprite
+-- rather than of the container.
+--
+-- This is what makes every freezer work rather than only the upright ones. A chest
+-- freezer carries the Freezer tile property but no `container` property at all, so
+-- IsoObject.createContainersFromSpriteProperties hands it a single container typed
+-- "freezer" and it answers isFreezer(). An upright fridge carries both IsFridge and
+-- Freezer and gets two, "fridge" and "freezer". But an object that names its container
+-- something of its own *and* carries Freezer - a butcher's display case in the base game,
+-- and whatever a furniture mod invents - gets that named container alongside the freezer
+-- one, and the named half answers neither. Reading the object's properties catches all
+-- three shapes, including kinds this mod has never heard of.
+local function objectIsRefrigeration(inventory)
+    local parent = inventory:getParent()
+    if not parent then return false end
+
+    -- Sprite properties are not guaranteed to exist on an arbitrary object, and the
+    -- has() overloads are resolved by argument type on the Java side, so keep a bad
+    -- container from taking the whole pass down with it.
+    local ok, cold = pcall(function()
+        local props = parent:getProperties()
+        if not props then return false end
+        return props:has("Freezer") == true or props:has("IsFridge") == true
+    end)
+    return ok and cold == true
+end
+
 -- A fridge or a freezer, whether or not it is running. Kept apart from the powered
 -- check so the context menu can tell "this is not the right kind of container" from
 -- "this is the right container and the power is out" - the second is a silent failure
 -- otherwise, and looks exactly like the mod not working.
 local function isColdContainer(inventory)
     if not inventory then return false end
-    return inventory:isFridge() == true or inventory:isFreezer() == true
+    if inventory:isFridge() == true or inventory:isFreezer() == true then return true end
+    if CF.ColdContainerTypes[inventory:getType()] then return true end
+    return objectIsRefrigeration(inventory)
 end
 CF.isColdContainer = isColdContainer
 
@@ -1026,6 +1064,48 @@ function CF.processFreezing(inventory, isCold)
     end
     if cleanBags + taintedBags < 1 then return end
 
+    -- Make the ice before paying for it, and pay only for what actually turned up.
+    --
+    -- CF.addItem is ItemContainer.AddItem, which answers nil rather than raising when it
+    -- will not take the item - a mod policing what may go in a container is the likely
+    -- reason, since vanilla enforces room in the UI rather than here. Spending first and
+    -- building afterwards meant a nil destroyed the water *and* the plastic bag and left
+    -- nothing in their place, which is the one outcome worse than not freezing. Building
+    -- first costs a moment with both the wrapper and the ice in the container, which
+    -- nothing minds, and whatever could not be built stays marked and waiting - the same
+    -- as when the plastic bags run short.
+    local made = 0
+    local function makeBags(fullType, count)
+        local built = 0
+        for _ = 1, count do
+            local bag = CF.addItem(inventory, fullType)
+            if not bag then break end
+
+            local wrapper = nil
+            if wrappers then
+                made = made + 1
+                wrapper = wrappers[made].item
+                CF.removeItem(inventory, wrapper)
+            end
+
+            CF.setCharge(bag, 1.0)
+            local md = bag:getModData()
+            md.tcLast = now
+            -- The bag comes back as the kind it went in as, so a garbage bag is not
+            -- quietly traded down for a grocery bag.
+            if wrapper then md.tcWrap = wrapper:getFullType() end
+            built = built + 1
+        end
+        return built
+    end
+
+    -- Both counts can only shrink here, so the tainted share stays affordable: fewer clean
+    -- bags leaves more clean water over, never less, and that leftover is what tops the
+    -- tainted ones up.
+    cleanBags = makeBags(CF.ICE_BAG, cleanBags)
+    taintedBags = makeBags(CF.ICE_BAG_TAINTED, taintedBags)
+    if cleanBags + taintedBags < 1 then return end
+
     -- Draw from the emptiest first, so the little containers come out empty rather than
     -- every one of them being left with a dribble. Tainted bags use the tainted water
     -- first and top up with clean.
@@ -1050,29 +1130,6 @@ function CF.processFreezing(inventory, isCold)
             end
         end
     end
-
-    local made = 0
-    local function makeBags(fullType, count)
-        for _ = 1, count do
-            local wrapper = nil
-            if wrappers then
-                made = made + 1
-                wrapper = wrappers[made].item
-                CF.removeItem(inventory, wrapper)
-            end
-            local bag = CF.addItem(inventory, fullType)
-            if bag then
-                CF.setCharge(bag, 1.0)
-                local md = bag:getModData()
-                md.tcLast = now
-                -- The bag comes back as the kind it went in as, so a garbage bag is not
-                -- quietly traded down for a grocery bag.
-                if wrapper then md.tcWrap = wrapper:getFullType() end
-            end
-        end
-    end
-    makeBags(CF.ICE_BAG, cleanBags)
-    makeBags(CF.ICE_BAG_TAINTED, taintedBags)
 end
 
 --[[ Coolers ]]
@@ -1318,10 +1375,42 @@ function CF.processItem(item, isCold, depth)
     end
 end
 
+-- Containers that are a *listing* rather than a place: a UI view that gathers up items
+-- which live somewhere else and shows them in one pane. Several popular mods add one.
+--
+-- Walking one is not a harmless duplicate pass, it is a wrong one. The listing is not a
+-- fridge, so the walk reads every item in it as out in the open: water set to freeze in a
+-- freezer is un-marked by CF.tickFreezing, and CF.tickIce writes tcCold = false onto a bag
+-- of ice that is sitting in one, so the next pass that runs on the real container bills it
+-- for the whole gap at the melting-in-the-open rate. Both the real container and the
+-- listing are in the same loot window, so both are walked in the same pass and the later
+-- of the two wins - which is to say the mod stops working while the listing is on screen,
+-- and the freezer is the thing it stops working on.
+--
+-- Named rather than detected. The obvious test - no parent object and no containing item
+-- - is true of the base game's own floor list, and that one has to be walked: a cooler or
+-- a bag of ice set down on the ground is reached through it. So the ones to skip are
+-- listed by the type string their author gave them.
+CF.UIContainerTypes = {
+    ["proxInv"] = true,            -- Proximity Inventory (B42)
+    ["local"] = true,              -- Proximity Inventory (B41), CleanUI
+    ["proximityInv"] = true,       -- BetterContainers
+    ["twistInv_corpses"] = true,   -- BetterContainers, the corpse pane
+}
+
+function CF.isUIContainer(inventory)
+    if not inventory then return false end
+    return CF.UIContainerTypes[inventory:getType()] == true
+end
+
 -- Returns whether the pass found anything worth another machine's attention.
 function CF.processTopLevel(inventory)
     if not inventory then return false end
     passWork = 0
+
+    -- Everything in here is reached through its own container in the same sweep, so
+    -- skipping the listing loses nothing and walking it corrupts what the real pass did.
+    if CF.isUIContainer(inventory) then return false end
 
     -- The loot window gives a cooler bag its own container button, so this can be
     -- handed the inside of a cooler. Walking that as an ordinary container would melt
