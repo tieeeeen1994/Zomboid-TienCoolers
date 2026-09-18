@@ -374,8 +374,9 @@ CF.containerIsCold = containerIsCold
 -- numbers, not merely numbers worked out the same way, so the client reports them and
 -- the server writes them in. See CF.reportCarried and onCarried in TienCooler_Server.lua.
 --
--- Nothing below needs an isClient() guard: the vanilla send*/sync* helpers are no-ops
--- offline, which is how vanilla itself calls them.
+-- Nothing below needs an isClient() guard: the vanilla send*/sync* helpers do nothing
+-- offline, which is how vanilla itself calls them. What they do need is a player who is
+-- standing somewhere - see placed().
 
 -- Set by the server while it acts on a client's request, so the helpers below know
 -- which connection to answer. nil everywhere else.
@@ -383,6 +384,29 @@ CF.syncPlayer = nil
 
 local function syncingPlayer()
     return CF.syncPlayer or getSpecificPlayer(0)
+end
+
+-- Whether a player is far enough into the world to address a packet to.
+--
+-- A player object exists well before it is placed on the map, and the loot window is
+-- built during that gap: ISPlayerData.createPlayerData makes the inventory UI, and making
+-- it refreshes its container list, which fires OnRefreshInventoryWindowContainers and
+-- runs a full pass of this mod. The packet is assembled before the game decides whether
+-- it has anywhere to go, and assembling it works out where the item lives by reading
+-- player.square, so a player who has not been put down yet takes the send down with a
+-- NullPointerException out of ContainerID.setInventoryContainer. Offline included: the
+-- send is a no-op, but the packet is built first and it is the building that throws.
+local function placed(player)
+    return player ~= nil and player:getSquare() ~= nil
+end
+
+-- Whether a change made now could be announced, for callers that keep no record of the
+-- change beyond the change itself and so had better not make it yet. True when there is
+-- nobody to answer on at all, which is a dedicated server outside a request: the helpers
+-- below have their own way through for that one.
+function CF.canSync()
+    local player = syncingPlayer()
+    return player == nil or placed(player)
 end
 
 -- A drainable's remaining charge rides along with the item's stats.
@@ -402,14 +426,19 @@ end
 -- Item modData does not travel on its own; a Coldpack keeps its charge there.
 function CF.syncModData(item)
     local player = syncingPlayer()
-    if player then syncItemModData(player, item) end
+    if placed(player) then syncItemModData(player, item) end
 end
 
 -- Custom names (the "(Iced)" suffix) live in the item's fields.
+--
+-- A dedicated server outside a client's request has no player to answer on - no local
+-- one, and nobody asked - so it broadcasts instead. That path addresses the item by its
+-- own container rather than by a player, which is why it is not also the way out for a
+-- player who merely has no square yet: there the answer is to wait, not to shout.
 function CF.syncFields(item)
     local player = syncingPlayer()
     if player then
-        syncItemFields(player, item)
+        if placed(player) then syncItemFields(player, item) end
     else
         item:syncItemFields()
     end
@@ -1183,6 +1212,12 @@ function CF.updateCoolerName(coolerItem, iced)
     md.tcNamed, md.tcBaseName = nil, nil
 
     if name ~= wanted then
+        -- The name on the item is the only record that this happened, so a rename that
+        -- cannot be announced yet is not made at all: renaming now and losing the send
+        -- would leave every other machine reading the old name for good, because the
+        -- next pass would find the name already right and have nothing to send. Passes
+        -- repeat, so this one is made by whichever pass first has somebody to tell.
+        if not CF.canSync() then return end
         coolerItem:setName(wanted)
         CF.syncFields(coolerItem)
     end
