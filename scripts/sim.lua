@@ -18,8 +18,11 @@ Fluid = { Water = "Water", TaintedWater = "TaintedWater", CarbonatedWater = "Car
 local classes = {}
 function instanceof(o, c) return o.__cls and o.__cls[c] == true end
 
--- The vanilla send*/sync* helpers. In game they do nothing offline, which is why the
--- mod calls them unguarded; here they record what would have gone over the wire.
+-- The vanilla send*/sync* helpers. In game they send nothing offline, but they assemble
+-- the packet before they decide that, and assembling it reads the square the player is
+-- standing on - so one that is not standing anywhere yet throws instead of doing nothing.
+-- Here they record what would have gone over the wire, and the players they are handed
+-- have squares, exactly as a player in the world does.
 net.packets, net.client, net.players = {}, false, {}
 net.squares, net.vehicles, net.translated = {}, {}, true
 net.server, net.online = false, {}
@@ -59,13 +62,28 @@ function net.copy(value)
     return out
 end
 
+-- Both of these work out where the item lives before they work out whether to send
+-- anything, and working that out reads the square the player is standing on. A player
+-- who has not been put on the map yet has none, and the game throws rather than quietly
+-- sending nothing - which is the whole of the bug these stubs exist to catch, so they
+-- throw too. See ContainerID.setInventoryContainer.
+local function addressedTo(player)
+    if player and not player:getSquare() then
+        error("NullPointerException: player.square is null (ContainerID)", 0)
+    end
+end
+
 function sendItemStats(item) net.log("stats:%s", item:getFullType()) end
-function syncItemModData(_, item) net.log("moddata:%s", item:getFullType()) end
+function syncItemModData(player, item)
+    addressedTo(player)
+    net.log("moddata:%s", item:getFullType())
+end
 -- syncItemFields sends the name and the item's *whole modData*, and SyncItemFieldsPacket
 -- wipes the receiver's modData and takes the sender's. So a label change carries one
 -- machine's cooler timestamps into the other machine's copy. When a test pairs two copies
 -- of an inventory (net.peers), the harness does exactly that to the other copy.
-function syncItemFields(_, item)
+function syncItemFields(player, item)
+    addressedTo(player)
     net.log("fields:%s", item:getFullType())
     local peer = net.peers and (net.client and net.peers.server or net.peers.client)
     local other = peer and peer:getItemWithIDRecursiv(item:getID())
@@ -212,7 +230,12 @@ function newPlayer(num, isLocal)
     player.inventory.parent = player
     function player:isLocalPlayer() return isLocal end
     function player:getCurrentSquare() return self.square end
+    -- What the packet writers read to work out where an item is. A player in the world
+    -- always has one, so a fresh stub starts placed somewhere empty; the gap before a
+    -- player is put on the map is its own test, further down.
+    function player:getSquare() return self.square end
     function player:setCurrentSquare(square) self.square = square end
+    player.square = squareAt(-1, -1, 0)
     function player:getUsername() return "player" .. num end
     function player:getInventory() return self.inventory end
     net.players[num] = player
@@ -734,6 +757,59 @@ clock.hours = 500
 CF.processTopLevel(me:getInventory())
 passed = reportStr("the spent bag's removal is transmitted",
     net.sent("remove:TienCoolers.IceBag"), 1) and passed
+
+-- Loading, before the player has been put down anywhere. The player object exists well
+-- before that happens and the inventory window is built in the gap - ISPlayerData makes
+-- the UI, building it refreshes the container list, and that fires a full pass of this
+-- mod at a player standing nowhere. Assembling a SyncItemFields packet reads that square,
+-- so the pass has to hold the label back until there is one, and hold the name back with
+-- it: the name on the item is the only record that the label was ever applied, so
+-- renaming now and losing the send would leave every other machine reading "Cooler" for
+-- good, with no later pass finding anything left to do about it.
+-- On a shelf of its own rather than in the player's inventory, which by now holds
+-- coolers from the tests above with labelling of their own still to settle.
+clock.hours = 0
+net.packets = {}
+local loadingShelf = newWorldContainer(30, 40, 0, "counter", false)
+local loadingCooler = newBag("Base.Cooler")
+loadingShelf:add(loadingCooler)
+loadingCooler.inventory:AddItem("TienCoolers.IceBag")
+
+local standingOn = me.square
+me.square = nil
+
+local survived = pcall(CF.processTopLevel, loadingShelf)
+passed = reportStr("a pass before the player is on the map does not throw",
+    survived, true) and passed
+passed = reportStr("  and nothing is addressed to a player with no square",
+    net.sent("fields:Base.Cooler"), 0) and passed
+passed = reportStr("  and the label waits rather than being applied unannounced",
+    loadingCooler:getName(), "Base.Cooler") and passed
+
+-- The loot window's own rebuild is the one that fires during loading, and it is skipped
+-- whole: the minute tick reaches the same containers as soon as the player is down.
+local loadingFridge = newWorldContainer(40, 40, 0, "fridge", true)
+loadingFridge:AddItem("TienCoolers.IceBag")
+net.packets = {}
+handlers.OnRefreshInventoryWindowContainers(
+    { player = 0, backpacks = { { inventory = loadingFridge } } }, "end")
+passed = reportStr("  and the loot window's rebuild while loading is skipped outright",
+    net.sent("command:tick"), 0) and passed
+
+me.square = standingOn
+
+net.packets = {}
+CF.processTopLevel(loadingShelf)
+passed = reportStr("the label arrives on the first pass after the player is down",
+    loadingCooler:getName(), "Base.Cooler " .. ICED) and passed
+passed = reportStr("  and goes out with it", net.sent("fields:Base.Cooler"), 1) and passed
+
+local placedFridge = newWorldContainer(41, 40, 0, "fridge", true)
+placedFridge:AddItem("TienCoolers.IceBag")
+net.packets = {}
+handlers.OnRefreshInventoryWindowContainers(
+    { player = 0, backpacks = { { inventory = placedFridge } } }, "end")
+passed = reportStr("  and the loot window runs again too", net.sent("command:tick"), 1) and passed
 
 -- The client driver: its own cooler is ticked here, the fridge is handed over. The
 -- request is rate limited because the loot window rebuilds itself constantly.

@@ -307,10 +307,17 @@ end
 
 -- Fires whenever the loot window rebuilds its container list, which is the moment a
 -- cooler left on the ground or a freezer full of water comes back into view.
+--
+-- The first of those rebuilds happens during loading, before the player is standing
+-- anywhere: ISPlayerData.createPlayerData builds the inventory window, and building it
+-- refreshes the container list. There is nothing to see then and the minute tick picks
+-- the same containers up a moment later, so that one is left alone rather than run
+-- against a half-built player.
 local function onRefreshContainers(window, state)
     if state ~= "end" then return end
     if not window or not window.backpacks then return end
     local player = getSpecificPlayer(window.player or 0)
+    if player and not player:getSquare() then return end
     for _, containerButton in ipairs(window.backpacks) do
         process(player, containerButton.inventory)
     end

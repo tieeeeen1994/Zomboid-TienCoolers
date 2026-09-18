@@ -379,10 +379,29 @@ cannot be picked up, because the server only ever had one. Under this model noth
 pushing anyway. A test pins it.
 
 Changes that do need transmitting use the vanilla helpers, which do nothing offline, which
-is why they are called unguarded: `sendItemStats` for a bag of ice's remaining charge,
-`syncItemModData` for a Cold Pack's (it has no used-delta of its own), `syncItemFields` for
-the *(Iced)* suffix, and `sendAddItemToContainer` / `sendRemoveItemFromContainer` for bags
-of ice that are created or used up. Bookkeeping modData needs no packet of its own, but it
+is why they are called without a mode check: `sendItemStats` for a bag of ice's remaining
+charge, `syncItemModData` for a Cold Pack's (it has no used-delta of its own),
+`syncItemFields` for the *(Iced)* suffix, and `sendAddItemToContainer` /
+`sendRemoveItemFromContainer` for bags of ice that are created or used up.
+
+The helpers that take a player do need one check, and it is not about the mode. They
+assemble the packet before deciding whether there is anywhere to send it, and assembling it
+works out where the item lives by reading the square the player is standing on, so a player
+who has not been put on the map yet takes the call down with a NullPointerException out of
+`ContainerID.setInventoryContainer` - offline included, where the send itself would have
+done nothing. That gap is real and this mod runs inside it: `ISPlayerData.createPlayerData`
+builds the inventory window during loading, building it refreshes the container list, and
+that fires `OnRefreshInventoryWindowContainers` and a full pass of this mod. So `placed()`
+gates every helper that takes a player, and the loot window's own rebuild is skipped
+outright while the player has no square, since the minute tick reaches the same containers
+as soon as there is one.
+
+A caller that keeps no record of a change beyond the change itself has to ask first, which
+is what `CF.canSync` is for. `CF.updateCoolerName` is the one: the name on the item is the
+only evidence the label was applied, so renaming during that gap and losing the send would
+leave every other machine reading "Cooler" for good - the next pass would find the name
+already right and have nothing left to send. It holds the rename back instead, and the
+first pass with somebody to tell makes it. Bookkeeping modData needs no packet of its own, but it
 does not stay on the machine that wrote it either: `syncItemFields` sends an item's entire
 modData along with its name, and the receiving side wipes its own and takes the sender's.
 So every label change carries one machine's cooler timestamps into the other's copy. That
