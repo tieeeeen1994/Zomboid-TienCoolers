@@ -227,6 +227,56 @@ dropped on them. Because a pass is worked out from a timestamp, the radius decid
 the work happens and never *how much* of it happens: a freezer missed while the player was
 away settles the entire gap the moment they walk back within it.
 
+### Containers that are a listing, not a place
+
+Several popular inventory mods add a "nearby items" pane: one container button holding
+everything within reach, gathered out of the real containers with
+`button.inventory:getItems():addAll(...)`. Proximity Inventory types its pane `proxInv`
+(`local` in its B41 build, as CleanUI does); BetterContainers has its own, `proximityInv`,
+plus `twistInv_corpses`. `CF.UIContainerTypes` lists them and `CF.isUIContainer` answers
+for them.
+
+They have to be skipped, and not because walking one is wasted work. A pane is not a
+fridge, so `CF.processTopLevel` reads `containerIsCold` off it as false and every item in
+it is treated as being out in the open: `CF.tickFreezing` un-marks water that is sitting
+in a powered freezer, and `CF.tickIce` writes `tcCold = false` onto a bag of ice that is
+sitting in one, so the *next* pass - the correct one, on the real container - bills that
+bag for the whole elapsed gap at the melting-in-the-open rate. The pane and the real
+container are both buttons in the same loot window, so both are walked in the same pass
+and whichever comes later wins. The visible result is a mod that stops working, on
+freezers, for exactly as long as the pane is on screen.
+
+Skipping costs nothing, because everything in the pane is reached through its own
+container in the same sweep. The guard sits at both ends: `process` in the client drops
+the pane before it can nudge the server about a container that has no address anyway, and
+`CF.processTopLevel` drops it again for any other caller.
+
+The test is the type string rather than the shape. The obvious structural check - no
+parent object and no containing item - is equally true of the base game's own floor list,
+and that one has to be walked: a cooler or a bag of ice set down on the ground is reached
+through it.
+
+### Finding every freezer
+
+`ItemContainer.isFreezer()` is a plain string compare against `"freezer"`. There is no
+property fallback, unlike `isFridge()`, which also accepts the `IsFridge` sprite property
+on the parent object. So what a container answers depends entirely on how its tile was
+written, and tiles are written three ways:
+
+- an upright fridge has `IsFridge`, `Freezer` and `container = fridge`, so
+  `IsoObject.createContainersFromSpriteProperties` gives it **two** containers, `fridge`
+  and `freezer`;
+- a chest freezer has `Freezer` and no `container` property at all, so the freezer
+  container becomes its **only** one - it answers `isFreezer()`, and always has;
+- an object that has `Freezer` *and* names a container of its own gets both: the named one
+  alongside the freezer one, and the named half answers neither.
+
+`CF.isColdContainer` therefore asks three things in turn - the two vanilla predicates, the
+container type against `CF.ColdContainerTypes`, and finally `objectIsRefrigeration`, which
+reads `Freezer` or `IsFridge` off the parent object's sprite properties. The last one is
+what makes the third shape work, and it is the only one that can see a freezer added by a
+mod that named its container something this mod has never heard of.
+
 ## Multiplayer
 
 The model is vanilla's. `Food.updateAge()` is never sent over the wire: every machine
@@ -458,6 +508,19 @@ plain `Base.Plasticbag`, but only while the option is on, so switching it off ca
 found ice into free plastic bags. A bag that did note one gives it back either way, since
 the plastic bag was paid for. Cold packs are not water and leave nothing.
 
+`CF.processFreezing` builds the ice before it spends anything on it, and spends only for
+what actually turned up. `CF.addItem` is `ItemContainer.AddItem`, which answers nil rather
+than raising when it will not take the item - a mod policing a container's contents is the
+likely reason, since vanilla enforces room in the UI (`hasRoomFor`) rather than in
+`AddItem`. Up to 1.5.0 the water was drawn and the wrapper removed first, so a nil
+destroyed both and left nothing in their place: the one outcome worse than not freezing.
+Building first costs a moment with the wrapper and the ice both in the container, which
+nothing minds, and whatever could not be built stays marked and waiting - the same answer
+as running out of plastic bags. Both counts can only shrink, so the tainted share stays
+affordable: fewer clean bags leaves more clean water over, never less, and that leftover is
+what tops the tainted ones up. The sim drives it with a container that refuses everything
+and one with room for a single bag.
+
 #### Meltwater
 
 With `CatchMeltwater` on, a container inside a cooler can be marked to catch meltwater
@@ -550,7 +613,7 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 `scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
 files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
 behaviour along with container ownership, addressing, what goes on the wire and the
-client-to-server round trip, tainted ice, plastic bags and meltwater, 238 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+client-to-server round trip, tainted ice, plastic bags and meltwater, 262 checks in all. Run it from `scripts/` with any Lua 5.4 host,
 or with `lupa` from Python:
 
 ```
