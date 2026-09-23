@@ -112,7 +112,7 @@ the rounding and it empties normally. In multiplayer the two copies then drift a
 until the bag reads full in your hands and empty the moment you set it down.
 
 So `tcCharge` in modData is the real number and the item's field is the *display* of it,
-written on every change so the bar and the weight stay right. `CF.getCharge` prefers the
+written on every change so the bar stays right. `CF.getCharge` prefers the
 note but yields to the item whenever the two differ by more than a whole step, which
 rounding can never explain - that is a fresh copy streamed from the server, or a player
 having used the item, and in both cases the item is right and the note is stale.
@@ -120,6 +120,41 @@ having used the item, and in both cases the item is right and the note is stale.
 Anything stepping the clock an hour at a time hides all of this, which is exactly how the
 sim used to walk it. The regression test steps a game minute at a time instead, and the
 harness models `setUsedDelta` with the rounding the real one does.
+
+### A bag of ice weighs its water
+
+Only with `ReworkedIce` on (see *Reworked Ice* below); off, a bag weighs its script's
+1.6, as it always has, and `CF.updateIceWeight` puts back that weight on a bag weighed
+while the switch was on.
+
+B42 weighs water at one unit a litre: `InventoryItem.getUnequippedWeight()` is
+`getActualWeight() + getContentsWeight()`, and the second is the fluid container's
+`getAmount()`. A bag of ice has no fluid container, so its weight is whatever the item
+says, and the script's fixed `Weight` could only ever be right for one value of
+`WaterPerBag`. Worse, the vanilla drainable never lightens it:
+
+```java
+public void updateWeight() {
+    if (getReplaceOnDeplete() != null) { ... }
+    if (getWeightEmpty() != 0.0f) {
+        setCustomWeight(true);
+        setActualWeight((script.getActualWeight() - weightEmpty) * getCurrentUsesFloat() + weightEmpty);
+    }
+}
+```
+
+The bag has neither, so `CF.updateIceWeight` does it instead: the empty bag from
+`CF.IceWeights` (0.1, a vanilla plastic bag) plus `WaterPerBag` times the exact charge,
+written as a custom weight. It runs from `CF.storeCharge` on every change and once more on
+every look at the bag, so one straight out of the loot table, or saved before an admin
+changed the setting, is put right on the next pass, and until then weighs the script's
+1.6. Since `updateWeight` is
+a no-op for this item, nothing in Java writes over it, and `customWeight` is saved and
+sent with the item.
+
+Weighing by the charge rather than the capacity means melting takes weight off the bag,
+and with meltwater on, the weight a bag loses is exactly the weight the bottle beside it
+gains. A Cold Pack is not in the table and keeps its own weight.
 
 ### Vanilla sandbox options
 
@@ -180,7 +215,7 @@ is stripped again when the ice runs out or the sandbox option is switched off.
 Contents/mods/TienCoolers/42/
   mod.info, icon.png, poster.png
   media/
-    sandbox-options.txt                        sandbox page + 13 options
+    sandbox-options.txt                        sandbox page + 11 options
     scripts/TienCooler_items.txt               IceBag and IceBagTainted items + their ground models
     textures/Item_TienCoolerIceBag*.png        32x32 inventory icons, clean and tainted
     textures/WorldItems/TienCoolerIceBag*.png  256x256 world model textures, clean and tainted
@@ -299,7 +334,8 @@ two of the item:
 
 | what | who |
 | --- | --- |
-| cooling, melting, refreezing, rot rebate, the label | every machine, on its own copy |
+| cooling, melting, rot rebate, the label | every machine, on its own copy |
+| with Reworked Ice on, filling a bag of ice from water set to freeze | whoever owns the freezer (`CF.mayTransfer`); off, a bag refreezes on every machine, like a cold pack |
 | the same for a cooler a player carries | that player's client, which reports the result to the server (see below) |
 | turning water into bags of ice | whoever owns the container (`CF.mayTransfer`) |
 | clearing away a spent bag of ice | the owner (`CF.destroyIce`), unless `CF.serverClearsIce` says otherwise |
@@ -315,13 +351,13 @@ would work from a client, since `sendRemoveItemFromContainer` does have a client
 but it cannot be split from handing the bag back. A client that removed a spent bag
 itself would leave the server with nothing to notice was spent. So `CF.serverClearsIce`
 moves the removal to the server whenever something only a server can do goes with it:
-`NeedPlasticBags` or `CatchMeltwater` is on, or the bag noted a plastic bag to return.
-With both options off and nothing owed, removal stays with the owner exactly as it was in
-1.4.3, which is why a server with the new options off behaves as it did before.
+`ReworkedIce` is on, or the bag noted a plastic bag to return. With it off and nothing
+owed, removal stays with the owner exactly as it was in 1.4.3, which is why a server with
+the option off behaves as it did before.
 
 A spent bag left in place is harmless: its charge is zero, so it cools nothing, and
 whoever may clear it does so on their next pass. A client that sees ice run out in a
-freezer it does not own leaves it for the server, and with those options on it does the
+freezer it does not own leaves it for the server, and with the option on it does the
 same for a cooler it carries.
 
 A client that sees water finish freezing in a base freezer therefore leaves the flag set
@@ -411,14 +447,47 @@ Freezing water is started from a client's context menu but always finishes in a 
 freezer, so the flag is set locally for the menu's benefit and sent on with a `setFreezing`
 command; the server sets it on its own copy and syncs it back.
 
-Freezing itself is a container-level pass, `CF.processFreezing`, not a per-item one: every
-container marked for freezing in the same fridge pools its water, so three glasses make a
-bag between them where none of them could alone. It has to work that way, because B42
-capacities are small - a Water Bottle holds 1 unit and a bucket 10 - so a per-bottle rule
-at any sensible bag size would leave most containers unable to freeze at all. Water is
-drawn off the emptiest containers first, so the small ones come out empty instead of every
-one keeping a dribble; a container that still holds water afterwards stays marked and its
-clock restarts, so each bag costs the full freezing time.
+Water pools by the fridge rather than by the bottle, so three glasses feed one bag between
+them. It has to pool, because B42 capacities are small (a Water Bottle holds 1 unit and a
+bucket 10), so a per-bottle rule at any sensible bag size would leave most containers
+unable to freeze at all. `CF.processFreezing` runs for every container a pass walks, and
+freezes one of two ways depending on `ReworkedIce`.
+
+Off, which is the default and how the mod has always done it, it is a timer
+(`classicFreezing`). Once every container's water has sat for `FreezeHours`, the pool turns
+into whole bags, `floor(pool / WaterPerBag)` of them, drawn off the emptiest containers
+first so the small ones come out empty rather than every one keeping a dribble. A container
+still holding water afterwards stays marked and its clock restarts, so each bag costs the
+full freezing time, and water short of a bag waits for more. A melted bag refreezes by
+itself in any powered fridge or freezer (`CF.refreeze`).
+
+On, it is a rate (`reworkedFreezing`), and the water sets the pace: each container freezes what it held
+when it was set to freeze (`tcFreezeAmount`) over `FreezeHours`, a steady trickle, and the
+ice goes into bags at `WaterPerBag` units a bagful. The bags only decide where the ice
+goes, so more bags never make water freeze faster, and everything set to freeze is ice
+`FreezeHours` after it was set, which is the wait the timer had. Ten units give a full bag
+half way through and a second at the end; two buckets freeze twice as much as one in the
+same time. Water poured into a container after it was set raises its note, so it keeps the
+same deadline, and a mark with no note, set before this existed or while the option was
+off, takes what is in there.
+
+`tcFreezeStart` is how far a container's water has been frozen up to. Each pass,
+`CF.processFreezing` turns what froze since then into ice, puts it into bags, takes that
+much water out of the containers in proportion to what each had ready, and moves each
+clock on by what it gave (`drawFrozen`). The ice fills the bags that are not yet full,
+fullest first and then in the order they sit, loose or in a cooler in there, so one bag
+is finished before the next is started and a melted bag fills exactly like a new one.
+When no bag can take the rest, a new one is made once there is a use of ice for it
+(`MIN_BAG`, 0.02, the least the drainable's field can show), so a bag turns up a few
+minutes after the water is set. Ice that finds no bag, for want of a plastic bag to start
+one in, is not taken: the clock stays where it was, and it all goes in at once when a bag
+arrives, as it did with the timer. A freezer nobody looked at settles the whole gap on the
+next look the same way.
+
+Drawing water is a transfer, so only the machine that owns the freezer does any of this
+(`CF.mayTransfer`). Nothing else fills a bag of ice: with the option on, `CF.refreeze` only
+refreezes a cold pack, which is gel sealed in its pack, and a client sees a bag fill when the server's stats
+arrive. Working the charge out anywhere without the water would be a free refreeze.
 
 The *(Iced)* label needs care of its own. It lives in the item's custom name, so whichever
 machine writes it writes it for everyone, and a dedicated server has no translations loaded
@@ -484,13 +553,19 @@ It cannot reproduce the real server's failure, since the harness's server comput
 numbers the client does, so what it pins is the new rule: the saved copy holds the client's
 numbers.
 
-### Tainted ice, plastic bags and meltwater
+### Reworked Ice
 
-Added in 1.5.0. Three rules, all of them about the bag of ice being a sealed bag of water,
-and each behind its own sandbox option: `TaintedIce`, `NeedPlasticBags` and
-`CatchMeltwater`. They ship as a beta, labelled [BETA] on the sandbox page, and all three
-are off by default, so a save updated to 1.5.0 plays exactly as it did on 1.4.3 until they
-are switched on.
+One sandbox option, `ReworkedIce` (`CF.reworkedIce`), labelled [BETA] and off by default,
+turns on everything that treats a bag of ice as the water it is made of: tainted ice,
+plastic bags, catching meltwater, melted bags that fill again only from water, freezing as
+a rate (see *Multiplayer* above) and weight (see *A bag of ice weighs its water*). Off, a
+save plays exactly as it did on 1.4.3.
+
+Up to 1.5.1 the first three were separate options, `TaintedIce`, `NeedPlasticBags` and
+`CatchMeltwater`. They were folded into this one because they only make sense together, the
+freezing rules lean on all of them, and one switch is one thing to test both ways. A server
+that had any of them on has to switch on Reworked Ice, since the old keys are no longer
+read.
 
 #### Tainted ice
 
@@ -500,22 +575,23 @@ registered in `CF.IceSources` at the same power. A second item rather than a fla
 first means nothing has to survive the wire for the player to tell them apart, and a bag
 found in a store freezer, or made before 1.5.0, is simply the clean kind.
 
-With `TaintedIce` off, all water freezes into the ordinary bag and pools together, as it
+With Reworked Ice off, all water freezes into the ordinary bag and pools together, as it
 did before. With it on, a container is tainted when it holds any `TaintedWater` at all
-(`CF.TaintedFluids`), and `CF.processFreezing` pools clean and tainted water apart:
+(`CF.TaintedFluids`), and its water is tainted ice. Each kind fills bags of its own kind
+first and then starts new ones. It goes into a bag of the other kind only when none of that
+kind's water is freezing in the same freezer: a melted clean bag set in with tainted water
+alone is topped up with it and becomes a tainted bag (`taintBag`, a swap to the other item
+that keeps the charge and everything noted on the bag), while clean and tainted water
+freezing side by side keep apart and spoil no clean ice. Clean ice in a tainted bag just
+leaves it tainted.
 
-1. clean water makes clean bags, as many as it can;
-2. whatever clean water is left short of a bag joins the tainted water, and the bags that
-   makes are tainted, drawing the tainted water first and topping up with clean.
-
-So a freezer never makes fewer bags than it did before 1.5.0 (the total is still
-`floor(pool / WaterPerBag)`), and clean water is only spoiled when there was not enough of
-it for a clean bag.
+Up to 1.5.1 clean water left short of a bag joined the tainted water, so that it would not
+sit there for good. Bags can be part-filled now, so it makes a part-filled clean bag instead.
 
 #### Plastic bags
 
-With `NeedPlasticBags` on, every bag of ice made from water uses up one empty
-bag from the same freezer. `CF.PlasticBags` lists every vanilla item that shows up as a
+With Reworked Ice on, every new bag of ice uses up one empty bag from the same freezer
+when it appears. A bag that is filling or being topped up already has one. `CF.PlasticBags` lists every vanilla item that shows up as a
 Plastic Bag or a Garbage Bag, eleven in all, with an order of use: plastic first, garbage
 bags last. Only bags holding nothing count. Short of bags the water keeps waiting, already
 frozen for as long as it needs, and turns to ice as soon as a bag is put in with it; the
@@ -535,14 +611,12 @@ likely reason, since vanilla enforces room in the UI (`hasRoomFor`) rather than 
 destroyed both and left nothing in their place: the one outcome worse than not freezing.
 Building first costs a moment with the wrapper and the ice both in the container, which
 nothing minds, and whatever could not be built stays marked and waiting - the same answer
-as running out of plastic bags. Both counts can only shrink, so the tainted share stays
-affordable: fewer clean bags leaves more clean water over, never less, and that leftover is
-what tops the tainted ones up. The sim drives it with a container that refuses everything
+as running out of plastic bags. The sim drives it with a container that refuses everything
 and one with room for a single bag.
 
 #### Meltwater
 
-With `CatchMeltwater` on, a container inside a cooler can be marked to catch meltwater
+With Reworked Ice on, a container inside a cooler can be marked to catch meltwater
 (`tcCatch`, *Catch Meltwater*). Off, `CF.canCatchMeltwater` refuses every container, so the
 menu offers nothing and the server ignores the command, and `CF.settleIce` pours nothing,
 even into a container marked while the option was on. The mark only means anything in a
@@ -554,12 +628,14 @@ before the container was set, and water that finds no room, is simply lost, and 
 is kept for later: setting a bottle does not bring back what melted before it. So a pass
 pours exactly what it melted, and no pouring state is carried from one pass to the next.
 
-The one number that is carried is `tcDrained`, how much of a bagful has run out of the bag
-into a container for good. A bag can only refreeze to `1 - tcDrained` (`CF.iceCapacity`,
-used by `CF.refreeze`). Without it a player could let half a bag run into a bottle,
-refreeze it to full for nothing and do it again, which is a freezer that makes water.
-Water that was lost rather than poured does not count, so a bag nobody has caught water
-from refreezes exactly as it always did.
+Whatever melts has left the bag, caught or not, so nothing about it is carried either.
+Up to 1.5.1 a melted bag refroze to full in any powered freezer, and `tcDrained` limited
+that only for water that had run into a container. Now a melted bag only fills again from
+water set to freeze in the same fridge or freezer (the one its cooler sits in, for ice in a
+cooler), like any other bag that is not full (see *Multiplayer* above for the freezing
+itself), so a freezer never makes water and the weight a bag gains is the weight the water
+loses. Caught water can be set to freeze beside the bag it came from. Cold packs are gel
+and still refreeze by themselves.
 
 `CF.settleIce` runs at the end of every cooler pass, handed what each bag melted in that
 pass (`consumeIce` returns it). It pours each bag's melt into the catching containers in

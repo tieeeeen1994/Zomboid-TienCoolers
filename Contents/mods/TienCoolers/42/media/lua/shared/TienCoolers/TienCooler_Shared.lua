@@ -49,6 +49,15 @@ CF.Meltwater = {
     ["TienCoolers.IceBagTainted"] = "TaintedWater",
 }
 
+-- fullType -> what the bag weighs with nothing in it, for the cold sources whose weight
+-- is the water frozen inside them. The rest of a bag of ice is WaterPerBag litres, at
+-- the one unit of weight a litre that B42 gives water in a bottle, and it goes as the
+-- ice melts. A Cold Pack keeps its own weight. Other mods may add their own.
+CF.IceWeights = {
+    ["TienCoolers.IceBag"] = 0.1,
+    ["TienCoolers.IceBagTainted"] = 0.1,
+}
+
 -- fullType -> order of use, lowest first. The bags a bag of ice can be frozen in, which
 -- have to be empty. Every vanilla item that shows up as a Plastic Bag counts, the grocery
 -- bags that spawn full included, and garbage bags go last because they are worth more as
@@ -103,6 +112,15 @@ function CF.opt(name, default)
     local v = vars[name]
     if v == nil then return default end
     return v
+end
+
+-- The one beta switch, off by default, so a save that updates plays exactly as it did.
+-- On, ice behaves like the water it is made of: tainted water makes tainted ice, a new
+-- bag of ice needs a plastic bag to freeze in, meltwater can be caught, a melted bag
+-- fills again only from water set to freeze beside it, water freezes at a steady rate
+-- into bags, and a bag weighs the water in it.
+function CF.reworkedIce()
+    return CF.opt("ReworkedIce", false) == true
 end
 
 function CF.worldHours()
@@ -220,7 +238,43 @@ function CF.storeCharge(item, value)
     if instanceof(item, "DrainableComboItem") then
         item:setUsedDelta(value)   -- the bar the player sees, to the nearest use
     end
+    CF.updateIceWeight(item, value)
     return value
+end
+
+-- Weigh a bag of ice by the water in it: the empty bag, plus WaterPerBag litres for a
+-- full one and the matching share of that for a partly melted one. So the weight follows
+-- the sandbox setting, and melting into a bottle moves the weight across rather than
+-- making or losing any.
+--
+-- Only with Reworked Ice on. The script's Weight is the one the bag has always had, and
+-- the game has no idea the item should get lighter: DrainableComboItem.updateWeight does nothing for an item
+-- with no WeightEmpty and no ReplaceOnDeplete, which is what keeps it from overwriting
+-- this. A custom weight is saved with the item and travels with it when it is sent.
+-- Every machine works it out from the charge for itself, like everything else here.
+function CF.updateIceWeight(item, charge)
+    local empty = CF.IceWeights[item:getFullType()]
+    if not empty then return end
+
+    -- Off, a bag weighs what its script says, and one weighed while the switch was on
+    -- goes back to that.
+    if not CF.reworkedIce() then
+        if item:isCustomWeight() then
+            local script = item:getScriptItem()
+            local weight = script and script:getActualWeight()
+            if weight then
+                item:setActualWeight(weight)
+                item:setWeight(weight)
+            end
+            item:setCustomWeight(false)
+        end
+        return
+    end
+
+    local weight = empty + CF.opt("WaterPerBag", 5.0) * (charge or CF.getCharge(item))
+    item:setCustomWeight(true)
+    item:setActualWeight(weight)
+    item:setWeight(weight)
 end
 
 function CF.setCharge(item, value)
@@ -250,11 +304,10 @@ end
 -- removed the ice itself, which B42 would let it do, would leave the server with no bag
 -- of ice to notice was spent, and neither would ever happen.
 --
--- With those options off and no plastic bag owed, nothing comes of the removal but the
+-- With Reworked Ice off and no plastic bag owed, nothing comes of the removal but the
 -- removal, and it stays with whoever owns the container, exactly as before 1.5.0.
 function CF.serverClearsIce(item)
-    return CF.opt("NeedPlasticBags", false) == true
-        or CF.meltwaterEnabled()
+    return CF.reworkedIce()
         or type(item:getModData().tcWrap) == "string"
 end
 
@@ -275,7 +328,7 @@ function CF.destroyIce(item)
     local wrapper = nil
     if CF.Meltwater[item:getFullType()] then
         wrapper = item:getModData().tcWrap
-        if type(wrapper) ~= "string" and CF.opt("NeedPlasticBags", false) then
+        if type(wrapper) ~= "string" and CF.reworkedIce() then
             wrapper = CF.PLASTIC_BAG
         end
     end
@@ -665,30 +718,11 @@ end
 
 --[[ Ice ]]
 
--- A melted bag of ice refreezes in a freezer, whether or not anything caught its water.
--- Water that did run out into a bottle is the exception: that is gone from the bag for
--- good, and tcDrained is how much of a bagful it has been. Without it a player could let
--- a bag half melt into a bottle, refreeze it to full for nothing and do it again, which
--- is a freezer that makes water.
---
--- Nothing drained is the default, so a bag from before this existed refreezes exactly as
--- it always did.
-function CF.iceCapacity(item)
-    local drained = item:getModData().tcDrained
-    if type(drained) ~= "number" or drained <= 0 then return 1.0 end
-    if drained >= 1.0 then return 0.0 end
-    return 1.0 - drained
-end
-
--- Refreeze a cold source for `dt` hours, never past what it still holds.
-function CF.refreeze(item, dt)
-    local charge = CF.getCharge(item)
-    local cap = CF.iceCapacity(item)
-    local frozen = charge + dt / CF.opt("FreezeHours", 7.0)
-    if frozen > cap then frozen = cap end
-    if frozen < charge then frozen = charge end
-    CF.setCharge(item, frozen)
-end
+-- With Reworked Ice on, a bag of ice is the water frozen in it and nothing more. Whatever
+-- melts leaves the bag, into a bottle set to catch it or onto the floor, so a melted bag
+-- never refreezes by itself: it is topped up from water set to freeze in the same fridge or
+-- freezer (see CF.processFreezing, further down). Off, it refreezes in any powered fridge
+-- or freezer, as it always has.
 
 -- Spend `amount` ice units across the bags in the cooler, emptiest bag first, and return
 -- how much of a bagful each one melted, for CF.settleIce. A bag that runs out is left at
@@ -719,9 +753,9 @@ function CF.isCatching(item)
     return item:getModData().tcCatch == true
 end
 
--- Off unless the sandbox turns it on, like everything 1.5.0 added.
+-- Part of Reworked Ice, off unless the sandbox turns it on.
 function CF.meltwaterEnabled()
-    return CF.opt("CatchMeltwater", false) == true
+    return CF.reworkedIce()
 end
 
 function CF.canCatchMeltwater(item)
@@ -752,7 +786,7 @@ end
 --
 -- Only water melting right now is poured. What melted with nothing set to catch it, and
 -- what finds no room, is lost: setting a bottle later does not bring back water that
--- melted before it. The bag can still refreeze that part, since nothing ran out of it.
+-- melted before it.
 local function pourMeltwater(bag, water, catchers)
     if water <= 0.0001 then return end
 
@@ -761,8 +795,7 @@ local function pourMeltwater(bag, water, catchers)
     local fluid = Fluid and Fluid[name]
     if not fluid then return end
 
-    local perBag = CF.opt("WaterPerBag", 5.0)
-    local owed = water * perBag
+    local owed = water * CF.opt("WaterPerBag", 5.0)
     for _, catcher in ipairs(catchers) do
         if owed <= 0.0001 then break end
         local fc = catcher:getFluidContainer()
@@ -775,12 +808,6 @@ local function pourMeltwater(bag, water, catchers)
                 owed = owed - poured
             end
         end
-    end
-
-    local ran = water - owed / perBag
-    if ran > 0 then
-        local md = bag:getModData()
-        md.tcDrained = (type(md.tcDrained) == "number" and md.tcDrained or 0) + ran
     end
 end
 
@@ -833,6 +860,10 @@ function CF.tickIce(item, isCold)
     md.tcLast = now
     md.tcCold = isCold
 
+    -- Every look, not only when the charge moves: a bag straight out of the loot table,
+    -- or one saved before the setting changed, weighs what the script says until then.
+    CF.updateIceWeight(item)
+
     if CF.getCharge(item) > 0 then
         CF.chill(item, CF.ICE_HEAT)
     end
@@ -867,7 +898,7 @@ end
 --
 -- Tainted water counts. A bottle filled from a rain barrel or a lake is tainted in B42,
 -- and refusing those silently, with no menu entry and no reason given, reads exactly like
--- the mod not working. With the TaintedIce sandbox option on it makes a Bag of Ice
+-- the mod not working. With Reworked Ice on it makes a Bag of Ice
 -- (Tainted), which melts back into tainted water; off, an ordinary one. Purified water is Fluid.Water already;
 -- purifying converts it.
 CF.FreezableFluids = { "Water", "TaintedWater" }
@@ -894,7 +925,7 @@ end
 -- The empty bags in a container that a bag of ice could be frozen in, the ones to use
 -- first at the front. Nil when the sandbox says no bag is needed.
 function CF.emptyPlasticBags(inventory)
-    if not CF.opt("NeedPlasticBags", false) then return nil end
+    if not CF.reworkedIce() then return nil end
 
     local found = {}
     local list = inventory:getItems()
@@ -938,6 +969,8 @@ function CF.startFreezingWater(item)
     local md = item:getModData()
     md.tcFreezing = true
     md.tcFreezeStart = CF.worldHours()
+    local fluid = item:getFluidContainer()
+    md.tcFreezeAmount = fluid and fluid:getAmount() or nil
     CF.syncModData(item)
 end
 
@@ -945,11 +978,12 @@ function CF.stopFreezingWater(item)
     local md = item:getModData()
     md.tcFreezing = nil
     md.tcFreezeStart = nil
+    md.tcFreezeAmount = nil
     CF.syncModData(item)
 end
 
 -- Called for every item in a powered fridge/freezer. Water marked for freezing turns
--- into bags of ice once it has sat there long enough.
+-- into ice at a steady rate while it sits there.
 -- Marked water that is no longer in the cold is forgotten, so it cannot be marked in a
 -- freezer, carried around and dropped back in to finish instantly. The making of the
 -- ice itself happens a level up, in processFreezing, because it pools.
@@ -968,14 +1002,342 @@ function CF.tickFreezing(item, isCold)
     end
 end
 
--- What is pooled for freezing in one container and how far along it is. Nothing in the
--- mod needs this; the player does. Water set to freeze changes nothing visible until a
--- bag appears hours later, so without it an empty freezer looks the same whether the
--- mod is working, the water is short of a bagful, or nothing was ever marked at all.
--- Returns the pooled amount, what one bag costs, the hours the newest of it still has to
--- wait, and how many empty plastic bags are in there to freeze it in (nil when none are
--- needed).
-function CF.freezeProgress(inventory)
+--[[ Freezing with Reworked Ice ]]
+
+-- Water set to freeze turns to ice at its own pace, and the ice goes into bags.
+--
+-- Each container freezes the water it held when it was set to freeze over FreezeHours, a
+-- steady tcFreezeAmount / FreezeHours units an hour. So the water decides how fast ice is
+-- made and the bags only decide where it goes: two buckets make twice the ice of one in
+-- the same time, and ten melted bags beside one glass do not make it freeze any faster.
+-- Everything set to freeze is ice FreezeHours later, which is the wait the old timer had.
+--
+-- The ice fills the bags that are not yet full, fullest first, so one bag is finished
+-- before the next is started, and a melted bag is topped up the same way as a new one.
+-- When no bag can take it, a new one is made once there is a use of ice for it (MIN_BAG).
+-- A full bag holds WaterPerBag units.
+--
+-- tcFreezeStart is how far a container's water has been frozen up to. A pass turns what
+-- froze since then into ice and moves it on by as much as found a bag. Ice with nowhere to
+-- go, for want of a plastic bag to start a new bag in, is not lost but not taken yet
+-- either, and goes in all at once when a bag turns up, as it did with the timer.
+--
+-- Water from a container holding any tainted water is tainted ice.
+-- Each kind fills bags of its own kind first, then makes new ones. It goes into a bag of
+-- the other kind only when none of that kind's water is freezing beside it: so a melted
+-- clean bag set in with tainted water alone is topped up with it and turns tainted, while
+-- clean and tainted water freezing side by side keep apart and spoil no clean ice. Clean
+-- ice in a tainted bag just leaves it tainted.
+
+-- The smallest bag worth making, as a share of a bagful: one use of the drainable, the
+-- least its own field can show.
+local MIN_BAG = 0.02
+
+local function tainting()
+    return CF.reworkedIce()
+end
+
+local function isTaintedBag(item)
+    return tainting() and item:getFullType() == CF.ICE_BAG_TAINTED
+end
+
+-- Units an hour a container freezes: what it held when set to freeze, over FreezeHours.
+-- Water poured in afterwards raises the note, so it is frozen by the same deadline. A
+-- mark from before 1.5.2 has no note and takes what is in there now.
+local function freezeRate(md, amount)
+    local recorded = md.tcFreezeAmount
+    if type(recorded) ~= "number" or recorded < amount then
+        recorded = amount
+        md.tcFreezeAmount = recorded
+    end
+    return recorded / CF.opt("FreezeHours", 7.0)
+end
+
+-- The water set to freeze in a container, split clean and tainted (all of it "clean",
+-- meaning ordinary, with tainted ice off), each with how much of it has frozen by now.
+local function markedWater(inventory, now)
+    local taintedOn = tainting()
+    local water = { clean = {}, tainted = {}, cleanPool = 0.0, taintedPool = 0.0 }
+
+    local list = inventory:getItems()
+    for i = 0, list:size() - 1 do
+        local item = list:get(i)
+        local md = item:getModData()
+        if md.tcFreezing then
+            local fluid = item:getFluidContainer()
+            local amount = fluid and fluid:getAmount() or 0
+            if amount > 0 and fluidIsFreezable(fluid) then
+                local rate = freezeRate(md, amount)
+                local start = md.tcFreezeStart or now
+                if start > now then start = now end
+                local ready = rate * (now - start)
+                if ready > amount then ready = amount end
+                local entry = { item = item, fluid = fluid, amount = amount, rate = rate,
+                                start = start, ready = ready }
+                if taintedOn and CF.isTaintedWater(fluid) then
+                    water.tainted[#water.tainted + 1] = entry
+                    water.taintedPool = water.taintedPool + amount
+                else
+                    water.clean[#water.clean + 1] = entry
+                    water.cleanPool = water.cleanPool + amount
+                end
+            end
+        end
+    end
+    return water
+end
+
+-- The bags of ice in a fridge or freezer that are not yet full, loose or in a cooler,
+-- fullest first and then in the order they sit, so every machine agrees.
+local function fillingBags(inventory)
+    local bags = {}
+    local function collect(container)
+        local list = container:getItems()
+        for i = 0, list:size() - 1 do
+            local item = list:get(i)
+            if CF.Meltwater[item:getFullType()] then
+                local charge = CF.getCharge(item)
+                if charge > 0.0001 and charge < 0.9999 then
+                    bags[#bags + 1] = { item = item, charge = charge, order = #bags + 1 }
+                end
+            end
+        end
+    end
+
+    collect(inventory)
+    local list = inventory:getItems()
+    for i = 0, list:size() - 1 do
+        local item = list:get(i)
+        if CF.isCoolerBag(item) and item:getInventory() then collect(item:getInventory()) end
+    end
+    table.sort(bags, function(a, b)
+        if a.charge ~= b.charge then return a.charge > b.charge end
+        return a.order < b.order
+    end)
+    return bags
+end
+
+-- Tainted ice in a clean bag makes it a tainted bag. They are separate items, so this is
+-- a swap, keeping everything noted on the bag. Nil if the container will not take it.
+local function taintBag(bag)
+    local container = bag:getContainer()
+    if not container then return nil end
+    local tainted = CF.addItem(container, CF.ICE_BAG_TAINTED)
+    if not tainted then return nil end
+
+    local from, into = bag:getModData(), tainted:getModData()
+    for k, v in pairs(from) do into[k] = v end
+    local charge = CF.getCharge(bag)
+    CF.removeItem(container, bag)
+    CF.setCharge(tainted, charge)
+    return tainted
+end
+
+-- Put `units` of ice of one kind into bags, by the rules above, and return how much found
+-- a bag. `ctx` carries what the kinds share within one pass: the bags, the plastic bags
+-- left to start new ones in, and whether each kind's water is freezing here at all.
+local function placeIce(ctx, tainted, units)
+    local perBag = ctx.perBag
+    local placed = 0.0
+
+    local otherFreezing = ctx.taintedFreezing
+    if tainted then otherFreezing = ctx.cleanFreezing end
+    for round = 1, 2 do
+        if round == 2 and otherFreezing then break end
+        for _, bag in ipairs(ctx.bags) do
+            if units - placed <= 0.0001 then break end
+            local sameKind = isTaintedBag(bag.item) == tainted
+            if (round == 1) == sameKind and bag.charge < 0.9999 then
+                local take = (1.0 - bag.charge) * perBag
+                if take > units - placed then take = units - placed end
+                local item = bag.item
+                if tainted and not sameKind then item = taintBag(item) end
+                if item then
+                    bag.item = item
+                    bag.charge = bag.charge + take / perBag
+                    CF.setCharge(item, bag.charge)
+                    placed = placed + take
+                end
+            end
+        end
+    end
+
+    -- A new bag for what is left, whole bags first. Each needs an empty plastic bag, when
+    -- the sandbox says so. Make the ice before paying for it: CF.addItem is
+    -- ItemContainer.AddItem, which answers nil rather than raising when it will not take
+    -- the item, and a nil after spending would have destroyed the water and the plastic
+    -- bag for nothing. Whatever could not be built stays as water, for the next pass.
+    while units - placed >= MIN_BAG * perBag - 1e-9 do
+        if ctx.wrappers and ctx.used >= #ctx.wrappers then break end
+        local bag = CF.addItem(ctx.inventory, tainted and CF.ICE_BAG_TAINTED or CF.ICE_BAG)
+        if not bag then break end
+
+        local wrapper = nil
+        if ctx.wrappers then
+            ctx.used = ctx.used + 1
+            wrapper = ctx.wrappers[ctx.used].item
+            CF.removeItem(ctx.inventory, wrapper)
+        end
+
+        local take = units - placed
+        if take > perBag then take = perBag end
+        CF.setCharge(bag, take / perBag)
+        local md = bag:getModData()
+        md.tcLast = ctx.now
+        -- The bag comes back as the kind it went in as, so a garbage bag is not quietly
+        -- traded down for a grocery bag.
+        if wrapper then md.tcWrap = wrapper:getFullType() end
+        ctx.bags[#ctx.bags + 1] = { item = bag, charge = take / perBag, order = #ctx.bags + 1 }
+        placed = placed + take
+    end
+    return placed
+end
+
+-- Take what found a bag out of the water it froze from, each container giving its share
+-- of what was ready, and move each one's clock on by what it gave.
+local function drawFrozen(entries, ready, placed)
+    if ready <= 0 or placed <= 0 then return end
+    local share = placed / ready
+    if share > 1 then share = 1 end
+    for _, entry in ipairs(entries) do
+        local taken = entry.ready * share
+        if taken > 0 then
+            entry.fluid:removeFluid(taken)
+            CF.syncFluid(entry.item)
+            if entry.amount - taken <= 0.0001 then
+                CF.stopFreezingWater(entry.item)
+            else
+                -- Travels with the mark on the next pass (see CF.processFreezing).
+                entry.item:getModData().tcFreezeStart = entry.start + taken / entry.rate
+            end
+        end
+    end
+end
+
+local function readyIn(entries)
+    local total = 0.0
+    for _, entry in ipairs(entries) do total = total + entry.ready end
+    return total
+end
+
+-- Refreeze a cold source that has sat in the cold for `dt` hours, a whole one every
+-- FreezeHours. With Reworked Ice on a bag of ice does not: what melted has left it, and
+-- it fills again only from water freezing beside it (CF.processFreezing). A cold pack is
+-- gel sealed in its pack, and refreezes by itself either way.
+function CF.refreeze(item, dt)
+    if CF.Meltwater[item:getFullType()] and CF.reworkedIce() then return end
+    local charge = CF.getCharge(item)
+    local frozen = charge + dt / CF.opt("FreezeHours", 7.0)
+    if frozen > 1.0 then frozen = 1.0 end
+    if frozen > charge then CF.setCharge(item, frozen) end
+end
+
+-- What is set to freeze in one container and how far along it is. Nothing in the mod
+-- needs this; the player does. Returns the water set to freeze, what one bag takes, the
+-- hours until all of it is ice, how many empty plastic bags are in there to start new
+-- bags in (nil when none are needed), and how much of the water the bags already in there
+-- cannot take, which is what needs a new bag.
+local function reworkedProgress(inventory)
+    local now = CF.worldHours()
+    local perBag = CF.opt("WaterPerBag", 5.0)
+    local water = markedWater(inventory, now)
+
+    local remaining = 0.0
+    for _, entries in ipairs({ water.clean, water.tainted }) do
+        for _, entry in ipairs(entries) do
+            local hours = entry.amount / entry.rate - (now - entry.start)
+            if hours > remaining then remaining = hours end
+        end
+    end
+
+    local pooled = water.cleanPool + water.taintedPool
+    local room = 0.0
+    for _, bag in ipairs(fillingBags(inventory)) do room = room + (1.0 - bag.charge) * perBag end
+    local spare = pooled - room
+    if spare < 0 then spare = 0 end
+
+    local bags = CF.emptyPlasticBags(inventory)
+    return pooled, perBag, remaining, bags and #bags or nil, spare
+end
+
+-- Water freezes by the container, not by the bottle: everything set to freeze in one
+-- fridge feeds the same bags, so three glasses fill a bag between them where none of them
+-- could alone.
+local function reworkedFreezing(inventory, isCold)
+    local now = CF.worldHours()
+    local marked = false
+
+    local list = inventory:getItems()
+    for i = 0, list:size() - 1 do
+        local item = list:get(i)
+        local md = item:getModData()
+        if md.tcFreezing then
+            if not isCold then
+                CF.stopFreezingWater(item)
+            elseif not item:getFluidContainer() then
+                CF.stopFreezingWater(item)      -- nothing to freeze in there
+            else
+                if md.tcFreezeStart == nil or md.tcFreezeStart > now then
+                    md.tcFreezeStart = now
+                end
+                marked = true
+                -- Say so again: a client that walked out of range and back has a freshly
+                -- streamed copy of this item, and modData does not ride along with one,
+                -- so without this its menu offers "Freeze Into Ice" on water that is
+                -- already freezing, and taking that offer restarts the clock. Server-only,
+                -- and only for water actually set to freeze, so it costs nothing anywhere
+                -- else.
+                CF.syncModData(item)
+            end
+        end
+    end
+    if not marked then return end
+
+    -- Making the ice is a transfer, not a computation: if every machine that can see
+    -- this fridge made bags there would be a bag per machine. Leave it for whoever owns
+    -- the container, which on a client is the server that a nudge will bring round to
+    -- it, and keep the water marked until then.
+    if not CF.mayTransfer(inventory) then return end
+
+    local water = markedWater(inventory, now)
+    local ctx = {
+        inventory = inventory,
+        now = now,
+        perBag = CF.opt("WaterPerBag", 5.0),
+        bags = fillingBags(inventory),
+        wrappers = CF.emptyPlasticBags(inventory),
+        used = 0,
+        cleanFreezing = water.cleanPool > 0,
+        taintedFreezing = water.taintedPool > 0,
+    }
+
+    local cleanReady = readyIn(water.clean)
+    drawFrozen(water.clean, cleanReady, placeIce(ctx, false, cleanReady))
+    local taintedReady = readyIn(water.tainted)
+    drawFrozen(water.tainted, taintedReady, placeIce(ctx, true, taintedReady))
+end
+
+--[[ Freezing without Reworked Ice ]]
+
+-- How the mod has always frozen water, and the default. Water set to freeze sits for
+-- FreezeHours and then turns into whole bags of ice, as many as the water pooled across
+-- the fridge makes; what is left short of a bag waits for more. Tainted water makes an
+-- ordinary bag, no plastic bag is needed, and a melted bag refreezes by itself.
+
+-- Take up to `owed` units from the entries, emptiest first, so the small containers come
+-- out empty rather than every one keeping a dribble. Returns what is still owed.
+local function drawEmptiestFirst(entries, owed)
+    table.sort(entries, function(a, b) return a.left < b.left end)
+    for _, entry in ipairs(entries) do
+        if owed <= 0.0001 then break end
+        local taken = entry.left < owed and entry.left or owed
+        entry.left = entry.left - taken
+        owed = owed - taken
+    end
+    return owed
+end
+
+local function classicProgress(inventory)
     local now = CF.worldHours()
     local wait = CF.opt("FreezeHours", 7.0)
     local pooled, remaining = 0.0, 0.0
@@ -995,37 +1357,13 @@ function CF.freezeProgress(inventory)
             end
         end
     end
-
-    local bags = CF.emptyPlasticBags(inventory)
-    return pooled, CF.opt("WaterPerBag", 5.0), remaining, bags and #bags or nil
+    return pooled, CF.opt("WaterPerBag", 5.0), remaining, nil, 0
 end
 
--- Take up to `owed` units from the entries, emptiest first, noting on each how much was
--- taken. Returns what is still owed.
-local function drawWater(entries, owed)
-    table.sort(entries, function(a, b) return a.left < b.left end)
-    for _, entry in ipairs(entries) do
-        if owed <= 0.0001 then break end
-        local taken = entry.left < owed and entry.left or owed
-        entry.left = entry.left - taken
-        owed = owed - taken
-    end
-    return owed
-end
-
--- Water freezes by the container, not by the bottle. Everything marked for freezing in
--- one fridge pools, so three glasses add up to a bag of ice where none of them could
--- make one alone, and a bucket that holds two bags' worth still gives two.
---
--- Clean and tainted water pool apart. Clean water makes clean bags first; whatever clean
--- water is left short of a bag then joins the tainted water, and the bags that makes are
--- tainted. So nothing freezes into fewer bags than it did before tainted ice existed, and
--- clean water only turns dirty when there was not enough of it for a clean bag.
-function CF.processFreezing(inventory, isCold)
+local function classicFreezing(inventory, isCold)
     local now = CF.worldHours()
     local wait = CF.opt("FreezeHours", 7.0)
     local ready, pool = {}, 0.0
-    local cleanPool, taintedPool = 0.0, 0.0
 
     local list = inventory:getItems()
     for i = 0, list:size() - 1 do
@@ -1041,25 +1379,15 @@ function CF.processFreezing(inventory, isCold)
                 local fluid = item:getFluidContainer()
                 local amount = fluid and fluid:getAmount() or 0
                 if amount > 0 and now - md.tcFreezeStart >= wait then
-                    -- With tainted ice switched off, all water freezes into ordinary ice
-                    -- and pools together, as it did before 1.5.0.
-                    local tainted = CF.opt("TaintedIce", false) == true
-                        and CF.isTaintedWater(fluid)
-                    ready[#ready + 1] = { item = item, fluid = fluid, amount = amount,
-                                          left = amount, tainted = tainted }
+                    ready[#ready + 1] = { item = item, fluid = fluid, amount = amount, left = amount }
                     pool = pool + amount
-                    if tainted then
-                        taintedPool = taintedPool + amount
-                    else
-                        cleanPool = cleanPool + amount
-                    end
                 elseif not fluid then
                     CF.stopFreezingWater(item)      -- nothing to freeze in there
                 else
                     -- Still waiting. Say so again: a client that walked out of range and
                     -- back has a freshly streamed copy of this item, and modData does not
                     -- ride along with one, so without this its menu offers "Freeze Into
-                    -- Ice" on water that is already freezing - and taking that offer
+                    -- Ice" on water that is already freezing, and taking that offer
                     -- restarts the clock. Server-only, and only for water actually
                     -- waiting, so it costs nothing anywhere else.
                     CF.syncModData(item)
@@ -1069,7 +1397,8 @@ function CF.processFreezing(inventory, isCold)
     end
 
     local perBag = CF.opt("WaterPerBag", 5.0)
-    if math.floor(pool / perBag) < 1 then return end
+    local wanted = math.floor(pool / perBag)
+    if wanted < 1 then return end
 
     -- Making the ice is a transfer, not a computation: if every machine that can see
     -- this fridge made bags there would be a bag per machine. Leave it for whoever owns
@@ -1077,75 +1406,20 @@ function CF.processFreezing(inventory, isCold)
     -- it, and keep the water marked until then.
     if not CF.mayTransfer(inventory) then return end
 
-    -- Every bag of ice needs an empty plastic bag to freeze in, when the sandbox says so.
-    -- Short of bags the water just keeps waiting, already frozen as long as it needs to
-    -- be, and turns into ice the moment a bag is put in with it.
-    local wrappers = CF.emptyPlasticBags(inventory)
-    local limit = wrappers and #wrappers or math.huge
-
-    local cleanBags = math.floor(cleanPool / perBag)
-    if cleanBags > limit then cleanBags = limit end
-    local taintedBags = 0
-    if taintedPool > 0 then
-        local leftover = cleanPool - cleanBags * perBag
-        taintedBags = math.floor((leftover + taintedPool) / perBag)
-        if taintedBags > limit - cleanBags then taintedBags = limit - cleanBags end
-    end
-    if cleanBags + taintedBags < 1 then return end
-
-    -- Make the ice before paying for it, and pay only for what actually turned up.
-    --
-    -- CF.addItem is ItemContainer.AddItem, which answers nil rather than raising when it
-    -- will not take the item - a mod policing what may go in a container is the likely
-    -- reason, since vanilla enforces room in the UI rather than here. Spending first and
-    -- building afterwards meant a nil destroyed the water *and* the plastic bag and left
-    -- nothing in their place, which is the one outcome worse than not freezing. Building
-    -- first costs a moment with both the wrapper and the ice in the container, which
-    -- nothing minds, and whatever could not be built stays marked and waiting - the same
-    -- as when the plastic bags run short.
+    -- Make the ice before paying for it, and pay only for what turned up: CF.addItem
+    -- answers nil when the container will not take the item, and whatever could not be
+    -- built stays marked and waiting.
     local made = 0
-    local function makeBags(fullType, count)
-        local built = 0
-        for _ = 1, count do
-            local bag = CF.addItem(inventory, fullType)
-            if not bag then break end
-
-            local wrapper = nil
-            if wrappers then
-                made = made + 1
-                wrapper = wrappers[made].item
-                CF.removeItem(inventory, wrapper)
-            end
-
-            CF.setCharge(bag, 1.0)
-            local md = bag:getModData()
-            md.tcLast = now
-            -- The bag comes back as the kind it went in as, so a garbage bag is not
-            -- quietly traded down for a grocery bag.
-            if wrapper then md.tcWrap = wrapper:getFullType() end
-            built = built + 1
-        end
-        return built
+    for _ = 1, wanted do
+        local bag = CF.addItem(inventory, CF.ICE_BAG)
+        if not bag then break end
+        CF.setCharge(bag, 1.0)
+        bag:getModData().tcLast = now
+        made = made + 1
     end
+    if made < 1 then return end
 
-    -- Both counts can only shrink here, so the tainted share stays affordable: fewer clean
-    -- bags leaves more clean water over, never less, and that leftover is what tops the
-    -- tainted ones up.
-    cleanBags = makeBags(CF.ICE_BAG, cleanBags)
-    taintedBags = makeBags(CF.ICE_BAG_TAINTED, taintedBags)
-    if cleanBags + taintedBags < 1 then return end
-
-    -- Draw from the emptiest first, so the little containers come out empty rather than
-    -- every one of them being left with a dribble. Tainted bags use the tainted water
-    -- first and top up with clean.
-    local clean, tainted = {}, {}
-    for _, entry in ipairs(ready) do
-        if entry.tainted then tainted[#tainted + 1] = entry else clean[#clean + 1] = entry end
-    end
-    drawWater(clean, cleanBags * perBag)
-    local short = drawWater(tainted, taintedBags * perBag)
-    if short > 0.0001 then drawWater(clean, short) end
-
+    drawEmptiestFirst(ready, made * perBag)
     for _, entry in ipairs(ready) do
         local taken = entry.amount - entry.left
         if taken > 0 then
@@ -1159,6 +1433,23 @@ function CF.processFreezing(inventory, isCold)
             end
         end
     end
+end
+
+--[[ Freezing ]]
+
+-- What is set to freeze in one container and how far along it is, for the menu. Returns
+-- the water set to freeze, what one bag takes and the hours still to wait, and with
+-- Reworked Ice on also how many empty plastic bags there are to start new bags in and
+-- how much water the bags already there cannot take.
+function CF.freezeProgress(inventory)
+    if CF.reworkedIce() then return reworkedProgress(inventory) end
+    return classicProgress(inventory)
+end
+
+-- Called for every container a pass walks, before its items.
+function CF.processFreezing(inventory, isCold)
+    if CF.reworkedIce() then return reworkedFreezing(inventory, isCold) end
+    return classicFreezing(inventory, isCold)
 end
 
 --[[ Coolers ]]
@@ -1250,6 +1541,7 @@ function CF.processCooler(coolerItem, isCold)
             item:getModData().tcLast = now
             item:getModData().tcCold = isCold
             local charge = CF.getCharge(item)
+            CF.updateIceWeight(item, charge)
             if charge > 0 then
                 CF.chill(item, CF.ICE_HEAT)
                 iceItems[#iceItems + 1] = { item = item, power = power }
@@ -1275,6 +1567,9 @@ function CF.processCooler(coolerItem, isCold)
 
     -- Sitting in a powered fridge or freezer: the vanilla rot rules already apply to
     -- the food (getOutermostContainer walks past the cooler), so only recharge the ice.
+    -- With Reworked Ice on, a bag of ice in here is topped up by the freezer's own pass
+    -- instead, from the water set to freeze in it, which reaches into coolers (see
+    -- CF.processFreezing), and only a cold pack refreezes here.
     if isCold then
         for _, entry in ipairs(iceItems) do
             CF.refreeze(entry.item, dt)

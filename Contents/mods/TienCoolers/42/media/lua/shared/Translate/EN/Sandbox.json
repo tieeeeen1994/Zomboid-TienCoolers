@@ -11,19 +11,13 @@
     "Sandbox_TienCoolers_IceLifeOutsideMult_tooltip": "Multiplier applied to ice lifetime when the ice is not in a cooler. 0.2 means it melts five times faster in a backpack.",
 
     "Sandbox_TienCoolers_FreezeHours": "Freezing Time (hours)",
-    "Sandbox_TienCoolers_FreezeHours_tooltip": "In-game hours a powered freezer needs to turn water into ice, and to refill a melted bag of ice.",
+    "Sandbox_TienCoolers_FreezeHours_tooltip": "In-game hours a powered freezer needs to turn water into ice, and to refill a melted bag of ice. With Reworked Ice on, it is the time water set to freeze takes to turn to ice, however much of it there is.",
 
     "Sandbox_TienCoolers_WaterPerBag": "Water Per Bag of Ice",
-    "Sandbox_TienCoolers_WaterPerBag_tooltip": "Units of water consumed per bag of ice produced. Water pools across every container set to freeze in the same fridge, so several small ones can add up to a bag. For scale, a bottle holds 1 unit and a bucket 10.",
+    "Sandbox_TienCoolers_WaterPerBag_tooltip": "Units of water consumed per bag of ice produced. Water pools across every container set to freeze in the same fridge, so several small ones can add up to a bag. For scale, a bottle holds 1 unit and a bucket 10. With Reworked Ice on, a full bag of ice also weighs as much as this much water, plus the bag.",
 
-    "Sandbox_TienCoolers_TaintedIce": "[BETA] Tainted Ice",
-    "Sandbox_TienCoolers_TaintedIce_tooltip": "Beta feature, off by default. Tainted water freezes into a Bag of Ice (Tainted), which cools food just as well as clean ice but melts into tainted water. When off, tainted water freezes into an ordinary Bag of Ice.",
-
-    "Sandbox_TienCoolers_NeedPlasticBags": "[BETA] Freezing Needs Plastic Bags",
-    "Sandbox_TienCoolers_NeedPlasticBags_tooltip": "Beta feature, off by default. Each bag of ice frozen from water uses up an empty plastic bag or garbage bag from the same freezer, and a spent bag of ice gives one back. When off, bags of ice are made out of water alone.",
-
-    "Sandbox_TienCoolers_CatchMeltwater": "[BETA] Catch Meltwater",
-    "Sandbox_TienCoolers_CatchMeltwater_tooltip": "Beta feature, off by default. Lets a bottle, pot or other water container inside a cooler be set to catch the water from the ice melting beside it. Only water that melts after the container is set is caught, and water with nowhere to go is lost. Clean ice gives clean water and tainted ice gives tainted water. Water that runs out of a bag cannot be frozen back into it.",
+    "Sandbox_TienCoolers_ReworkedIce": "[BETA] Reworked Ice",
+    "Sandbox_TienCoolers_ReworkedIce_tooltip": "Beta feature, off by default. Makes ice behave like the water it is made of. Tainted water freezes into a Bag of Ice (Tainted), which cools food just as well but melts into tainted water, and a clean bag topped up with tainted water becomes tainted. Each new bag of ice needs an empty plastic bag or garbage bag in the freezer, given back when the ice is used up. A bottle, pot or other water container inside a cooler can be set to catch the water from the ice melting beside it. Water set to freeze turns to ice a little at a time, filling one bag before starting the next, and water short of a full bag makes a partly filled one. A melted bag fills up again only from water set to freeze beside it, and a bag weighs as much as the water in it. When off, the mod plays as it always has.",
 
     "Sandbox_TienCoolers_UseColdpacks": "Cold Packs Work as Ice",
     "Sandbox_TienCoolers_UseColdpacks_tooltip": "Lets the vanilla Cold Pack chill a cooler too, at the strength set below.",

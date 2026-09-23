@@ -4,8 +4,8 @@
 local clock = { hours = 0 }
 
 GameTime = { getInstance = function() return { getWorldAgeHours = function() return clock.hours end } end }
--- Tainted ice, plastic bags and meltwater are all off by default, and tested with them
--- switched on near the end. Everything before that plays the game as it was before them.
+-- Reworked Ice is off by default, and tested switched on near the end. Everything
+-- before that plays the game as it was before it.
 SandboxVars = { FoodRotSpeed = 3, TienCoolers = {} }
 function getClimateManager() return { getTemperature = function() return 20.0 end } end
 function ZombRand(n) return 12345 end
@@ -188,6 +188,7 @@ function Container:AddItem(fullType)
     end
     local it = newItem(fullType, { InventoryItem = true, DrainableComboItem = true })
     it.delta = 1.0
+    it.scriptWeight = 1.6
     it.container = self
     table.insert(self.list, it)
     return it
@@ -404,6 +405,17 @@ function Item:getWorldItem() return self.worldItem end
 function Item:getSquare() return self.holder and self.holder:getSquare() or nil end
 function Item:getHeat() return self.heat end
 function Item:setHeat(v) self.heat = v end
+-- Weight. A new item weighs what its script says (`scriptWeight`, the bag of ice's 1.6),
+-- and a custom weight the mod sets is what the game reads from then on.
+function Item:setCustomWeight(v) self.customWeight = v end
+function Item:isCustomWeight() return self.customWeight == true end
+function Item:setActualWeight(v) self.actualWeight = v < 0 and 0 or v end
+function Item:setWeight(v) self.weight = v < 0 and 0 or v end
+function Item:getActualWeight() return self.actualWeight or self.scriptWeight or 0 end
+function Item:getScriptItem()
+    local weight = self.scriptWeight
+    return weight and { getActualWeight = function() return weight end } or nil
+end
 
 -- ---------------------------------------------------------------------------
 local MEDIA = "../Contents/mods/TienCoolers/42/media/lua/"
@@ -1951,15 +1963,205 @@ SandboxVars.TienCoolers.FreezeHours = 7.0
 SandboxVars.TienCoolers.WaterPerBag = 5.0
 SandboxVars.TienCoolers.IceLifeHours = 48.0
 
--- All three are opt-in. A save that has not switched them on gets none of it.
-passed = reportStr("tainted ice is off by default", CF.opt("TaintedIce", false), false) and passed
-passed = reportStr("plastic bags are off by default", CF.opt("NeedPlasticBags", false), false) and passed
-passed = reportStr("meltwater is off by default", CF.meltwaterEnabled(), false) and passed
+-- Reworked Ice is opt-in. A save that has not switched it on gets none of it.
+passed = reportStr("reworked ice is off by default", CF.reworkedIce(), false) and passed
+passed = reportStr("  and meltwater with it", CF.meltwaterEnabled(), false) and passed
+passed = reportStr("  and plastic bags", CF.emptyPlasticBags(newContainer("freezer", true)), nil) and passed
 
-SandboxVars.TienCoolers.TaintedIce = true
-SandboxVars.TienCoolers.CatchMeltwater = true
+SandboxVars.TienCoolers.ReworkedIce = true
 
-local function freezeAll(freezer, holders)
+-- How many bags of a kind a container holds, how many of them are full, and how much
+-- ice there is in them altogether, in bagfuls.
+function iceStats(container, fullType)
+    local count, full, total = 0, 0, 0.0
+    for _, it in ipairs(container.list) do
+        if it:getFullType() == (fullType or "TienCoolers.IceBag") then
+            count = count + 1
+            if CF.getCharge(it) >= 0.9999 then full = full + 1 end
+            total = total + CF.getCharge(it)
+        end
+    end
+    return count, full, total
+end
+
+do
+    -- Weight. A bag of ice weighs its water, WaterPerBag litres at one a litre, plus the
+    -- plastic bag, and gets lighter as it melts. The exact charge counts, not the bar.
+    do
+        local loosePack = newContainer("bag")
+    local loose = loosePack:AddItem("TienCoolers.IceBag")
+    clock.hours = 0
+    CF.processTopLevel(loosePack)
+    clock.hours = 5
+    CF.processTopLevel(loosePack)
+    passed = report("a melting bag weighs the water left in it", loose:getActualWeight(),
+            0.1 + 5.0 * (1 - 5 / 9.6), 1e-9) and passed
+        passed = reportStr("  as a weight the game keeps", loose.customWeight, true) and passed
+
+        -- Switched off, a bag goes back to the weight its script gives it.
+        SandboxVars.TienCoolers.ReworkedIce = false
+        CF.processTopLevel(loosePack)
+        passed = report("switched off, a bag weighs what it always did", loose:getActualWeight(), 1.6, 1e-9) and passed
+        passed = reportStr("  as the script's weight, not one of ours", loose.customWeight, false) and passed
+        SandboxVars.TienCoolers.ReworkedIce = true
+
+        SandboxVars.TienCoolers.WaterPerBag = 2.0
+        local lightPack = newContainer("bag")
+        local light = lightPack:AddItem("TienCoolers.IceBag")
+        passed = report("a new bag weighs what the script says", light:getActualWeight(), 1.6, 1e-9) and passed
+        CF.processTopLevel(lightPack)
+        passed = report("  until it is first looked at: 2 litres a bag", light:getActualWeight(), 2.1, 1e-9) and passed
+        local lightCooler = newBag("Base.Cooler")
+        local lightIn = lightCooler.inventory:AddItem("TienCoolers.IceBag")
+        local lightTop = newContainer("bag")
+        lightTop:add(lightCooler)
+        CF.processTopLevel(lightTop)
+        passed = report("  and the same in a cooler", lightIn:getActualWeight(), 2.1, 1e-9) and passed
+        SandboxVars.TienCoolers.WaterPerBag = nil
+
+        local packCooler = newBag("Base.Cooler")
+        local coldpack = packCooler.inventory:add(newItem("Base.Coldpack", { InventoryItem = true }))
+        coldpack.scriptWeight = 0.3
+        local packTop = newContainer("bag")
+        packTop:add(packCooler)
+        CF.processTopLevel(packTop)
+        passed = report("a Cold Pack keeps its own weight", coldpack:getActualWeight(), 0.3, 1e-9) and passed
+        passed = reportStr("  untouched", coldpack.customWeight, nil) and passed
+    end
+end
+
+-- Scenario: a melted bag of ice in a powered freezer. What melted has left the bag, so
+-- it refreezes only from water set to freeze beside it, as fast as that water freezes:
+-- all of it over FreezeHours.
+clock.hours = 0
+local freezer = newContainer("freezer", true)
+local half = freezer:AddItem("TienCoolers.IceBag")
+half.delta = 0.25
+CF.processTopLevel(freezer)
+clock.hours = 3
+CF.processTopLevel(freezer)
+passed = report("a melted bag with no water beside it stays put", half.delta, 0.25) and passed
+
+do
+    local topUpJug = newItem("Base.WaterBottleFull", { InventoryItem = true })
+    topUpJug.amount = 3.0
+    topUpJug.fluid = {
+        getAmount = function() return topUpJug.amount end,
+        contains = function(_, f) return f == "Water" end,
+        removeFluid = function(_, v) topUpJug.amount = topUpJug.amount - v end,
+    }
+    freezer:add(topUpJug)
+    CF.startFreezingWater(topUpJug)
+    CF.processTopLevel(freezer)
+    passed = report("  and the freezing tooltip gives the hours to freeze it all", select(3, CF.freezeProgress(freezer)),
+        7.0, 1e-9) and passed
+    passed = report("  with none of it left over for a new bag", select(5, CF.freezeProgress(freezer)), 0.0, 1e-9) and passed
+    clock.hours = 6
+    CF.processTopLevel(freezer)
+    passed = report("  with 3 units set to freeze, 3h puts 3/7 of them in", CF.getCharge(half), 0.25 + 3.0 * 3 / 7 / 5.0, 1e-9) and passed
+    passed = report("  at 5 units a bagful", topUpJug.amount, 3.0 - 3.0 * 3 / 7, 1e-9) and passed
+    clock.hours = 12
+    CF.processTopLevel(freezer)
+    passed = report("  and no fuller than the water allows", CF.getCharge(half), 0.25 + 3.0 / 5.0, 1e-9) and passed
+    passed = report("  which is all of it", topUpJug.amount, 0.0, 1e-9) and passed
+    passed = reportStr("  so the empty jug stops freezing", CF.isFreezingWater(topUpJug), false) and passed
+
+    -- A cold pack is gel sealed in its pack, and still refreezes by itself.
+    SandboxVars.TienCoolers.UseColdpacks = true
+    local gelFreezer = newContainer("freezer", true)
+    local gel = gelFreezer:add(newItem("Base.Coldpack", { InventoryItem = true }))
+    gel.md.tcCharge = 0.25
+    CF.processTopLevel(gelFreezer)
+    clock.hours = 15
+    CF.processTopLevel(gelFreezer)
+    passed = report("a cold pack refreezes with no water", CF.getCharge(gel), 0.25 + 3 / 7, 1e-9) and passed
+    SandboxVars.TienCoolers.UseColdpacks = nil
+end
+
+-- The same waiting and the same water as the old timer, stepped a game minute at a time,
+-- which is the harshest the charge rounding gets. Ten units freeze at 10/7 an hour: the
+-- first bag turns up once a use of ice has frozen, is full half way through FreezeHours,
+-- and the second is full at the end of it.
+do
+    local stepFreezer = newContainer("freezer", true)
+    local stepWater = newGlass(10.0)
+    clock.hours = 0
+    stepFreezer:add(newBag("Base.Plasticbag"))
+    stepFreezer:add(newBag("Base.Plasticbag"))
+    stepFreezer:add(stepWater)
+    CF.startFreezingWater(stepWater)
+    CF.processTopLevel(stepFreezer)
+    passed = report("water just set to freeze is not ice yet", (iceStats(stepFreezer)), 0) and passed
+    for minute = 1, 5 do
+        clock.hours = minute / 60
+        CF.processTopLevel(stepFreezer)
+    end
+    passed = report("  a bag turns up once a use of it has frozen", (iceStats(stepFreezer)), 1) and passed
+    for minute = 6, 210 do
+        clock.hours = minute / 60
+        CF.processTopLevel(stepFreezer)
+    end
+    passed = report("  one bag, full, half way through FreezeHours", select(3, iceStats(stepFreezer)), 1.0, 1e-6) and passed
+    for minute = 211, 420 do
+        clock.hours = minute / 60
+        CF.processTopLevel(stepFreezer)
+    end
+    passed = report("  and two full after FreezeHours", select(2, iceStats(stepFreezer)), 2) and passed
+    passed = report("  out of the ten units", stepWater.amount, 0.0, 1e-6) and passed
+
+    -- 12.5 units make two full bags and a half-full one in the time the old timer made two
+    -- and left 2.5 units waiting.
+    local oddFreezer = newContainer("freezer", true)
+    for _ = 1, 3 do oddFreezer:add(newBag("Base.Plasticbag")) end
+    local oddWater = newGlass(12.5)
+    clock.hours = 50
+    oddFreezer:add(oddWater)
+    CF.startFreezingWater(oddWater)
+    CF.processTopLevel(oddFreezer)
+    clock.hours = 57
+    CF.processTopLevel(oddFreezer)
+    passed = report("12.5 units make three bags", (iceStats(oddFreezer)), 3) and passed
+    passed = report("  two of them full", select(2, iceStats(oddFreezer)), 2) and passed
+    passed = report("  holding all of the water", select(3, iceStats(oddFreezer)), 2.5, 1e-9) and passed
+
+    -- The water sets the pace, not the bags. Five nearly full bags beside five units of
+    -- water are topped up no faster than one would be: 5/7 of a unit an hour, fullest first.
+    local manyFreezer = newContainer("freezer", true)
+    for _ = 1, 5 do manyFreezer:AddItem(CF.ICE_BAG).delta = 0.9 end
+    local manyWater = newGlass(5.0)
+    clock.hours = 100
+    manyFreezer:add(manyWater)
+    CF.startFreezingWater(manyWater)
+    CF.processTopLevel(manyFreezer)
+    clock.hours = 101
+    CF.processTopLevel(manyFreezer)
+    passed = report("more bags do not make water freeze faster", select(3, iceStats(manyFreezer)),
+        4.5 + 5.0 / 7 / 5.0, 1e-9) and passed
+    passed = report("  one is finished before the next is started", select(2, iceStats(manyFreezer)), 1) and passed
+
+    -- Lifting a half-made bag out changes nothing about the water: the rest goes into a
+    -- new bag at the same pace, and it is all ice by FreezeHours.
+    local liftFreezer = newContainer("freezer", true)
+    local liftWater = newGlass(5.0)
+    clock.hours = 200
+    liftFreezer:add(newBag("Base.Plasticbag"))
+    liftFreezer:add(newBag("Base.Plasticbag"))
+    liftFreezer:add(liftWater)
+    CF.startFreezingWater(liftWater)
+    CF.processTopLevel(liftFreezer)
+    clock.hours = 203.5
+    CF.processTopLevel(liftFreezer)
+    local lifted = nil
+    for _, it in ipairs(liftFreezer.list) do if it:getFullType() == CF.ICE_BAG then lifted = it end end
+    passed = report("a bag half made", CF.getCharge(lifted), 0.5, 1e-9) and passed
+    liftFreezer:Remove(lifted)
+    clock.hours = 207
+    CF.processTopLevel(liftFreezer)
+    passed = report("  and lifted out leaves the rest to freeze on time", select(3, iceStats(liftFreezer)), 0.5, 1e-9) and passed
+end
+
+local function freezeAll(freezer, holders, wrappers)
+    for _ = 1, wrappers or 0 do freezer:add(newBag("Base.Plasticbag")) end
     for _, holder in ipairs(holders) do
         freezer:add(holder)
         CF.startFreezingWater(holder)
@@ -1969,36 +2171,34 @@ local function freezeAll(freezer, holders)
     CF.processTopLevel(freezer)
 end
 
--- Clean water makes clean bags first, and only what is left short of a bag joins the
--- tainted water. Seven clean and four tainted: one clean bag, then the four tainted units
--- topped up with one clean make a tainted one, and the last clean unit is left waiting.
+-- Clean and tainted water freeze apart, and no clean water is spoiled. Seven clean and
+-- four tainted: a full clean bag and one two-fifths full, and a tainted bag four-fifths.
 local splitFreezer = newContainer("freezer", true)
 local splitClean = newFluidHolder("Base.BucketWood", 10, { Water = 7.0 })
 local splitDirty = newFluidHolder("Base.BucketWood", 10, { TaintedWater = 4.0 })
-freezeAll(splitFreezer, { splitClean, splitDirty })
-passed = reportStr("clean water makes a clean bag first", bagsIn(splitFreezer), 1) and passed
-passed = reportStr("  and the rest goes in with the tainted water",
+freezeAll(splitFreezer, { splitClean, splitDirty }, 3)
+passed = reportStr("clean water makes clean bags", bagsIn(splitFreezer), 2) and passed
+passed = report("  holding all of it", select(3, iceStats(splitFreezer, CF.ICE_BAG)), 7.0 / 5.0, 1e-9) and passed
+passed = reportStr("  and tainted water a tainted one",
     countType(splitFreezer, "TienCoolers.IceBagTainted"), 1) and passed
-passed = report("  which uses the tainted water up first", splitDirty.fluid:getAmount(), 0.0) and passed
-passed = report("  so as little clean water as possible is spoiled", splitClean.fluid:getAmount(), 1.0) and passed
-passed = reportStr("  and what is left keeps waiting", CF.isFreezingWater(splitClean), true) and passed
+passed = report("  holding all of that", select(3, iceStats(splitFreezer, CF.ICE_BAG_TAINTED)), 4.0 / 5.0, 1e-9) and passed
+passed = report("  so no clean water is spoiled", splitClean.fluid:getAmount() + splitDirty.fluid:getAmount(), 0.0, 1e-9) and passed
 
--- Three and three is only one bag between them, and it has to be the tainted kind.
+-- Three and three make a part-filled bag of each kind.
 local shortFreezer = newContainer("freezer", true)
 freezeAll(shortFreezer, { newFluidHolder("Base.BucketWood", 10, { Water = 3.0 }),
-                          newFluidHolder("Base.BucketWood", 10, { TaintedWater = 3.0 }) })
-passed = reportStr("clean water short of a bag is not frozen clean", bagsIn(shortFreezer), 0) and passed
-passed = reportStr("  but still counts towards a tainted one",
+                          newFluidHolder("Base.BucketWood", 10, { TaintedWater = 3.0 }) }, 2)
+passed = reportStr("clean water short of a bag makes a part-filled clean one", bagsIn(shortFreezer), 1) and passed
+passed = reportStr("  and tainted water a tainted one",
     countType(shortFreezer, "TienCoolers.IceBagTainted"), 1) and passed
 
 -- A drop of tainted water makes the whole container tainted.
 local mixedFreezer = newContainer("freezer", true)
-freezeAll(mixedFreezer, { newFluidHolder("Base.BucketWood", 10, { Water = 4.9, TaintedWater = 0.1 }) })
+freezeAll(mixedFreezer, { newFluidHolder("Base.BucketWood", 10, { Water = 4.9, TaintedWater = 0.1 }) }, 1)
 passed = reportStr("a container with any tainted water in it is tainted",
     countType(mixedFreezer, "TienCoolers.IceBagTainted"), 1) and passed
 
 -- Plastic bags. Water with nothing to freeze in waits, and says why.
-SandboxVars.TienCoolers.NeedPlasticBags = true
 local bagFreezer = newWorldContainer(900, 900, 0, "freezer", true)
 local bagWater = newFluidHolder("Base.BucketWood", 10, { Water = 10.0 })
 freezeAll(bagFreezer, { bagWater })
@@ -2099,20 +2299,126 @@ clock.hours = 2024
 CF.processTopLevel(meltTop)
 passed = report("a day of melting fills the bucket with half a bag", amountOf(meltBucket, "Water"), 2.5) and passed
 passed = report("  of clean water", amountOf(meltBucket, "TaintedWater"), 0.0) and passed
-passed = report("  and the bag knows that water has gone", meltIce.md.tcDrained, 0.5) and passed
+passed = report("  taking its weight with it", meltIce:getActualWeight() + amountOf(meltBucket, "Water"),
+    5.1, 1e-9) and passed
 passed = reportStr("  and the bucket's new level goes out", net.sent("stats:Base.BucketWood") > 0, true) and passed
 
--- Water that ran out cannot be frozen back in. A bag that kept its water can.
+-- Caught or not, melted water has left the bag. Neither refreezes without water.
 local refreezer = newContainer("freezer", true)
 meltCooler.inventory:Remove(meltIce)
 refreezer:add(meltIce)
-local sealedIce = refreezer:AddItem(CF.ICE_BAG)
-sealedIce.delta = 0.5
+local lostIce = refreezer:AddItem(CF.ICE_BAG)
+lostIce.delta = 0.5
 CF.processTopLevel(refreezer)
 clock.hours = 2040
 CF.processTopLevel(refreezer)
-passed = report("a drained bag refreezes only what it kept", CF.getCharge(meltIce), 0.5) and passed
-passed = report("  while one that kept its water refreezes whole", CF.getCharge(sealedIce), 1.0) and passed
+passed = report("a bag whose water was caught does not refreeze", CF.getCharge(meltIce), 0.5) and passed
+passed = report("  nor does one whose water was lost", CF.getCharge(lostIce), 0.5) and passed
+
+-- Pour the caught water back in, set to freeze, and it goes back into the ice: two half
+-- bags take the whole bucket and nothing is made or lost on the way round.
+refreezer:add(meltBucket)
+CF.startFreezingWater(meltBucket)
+local refillMenu = newMenu()
+handlers.OnFillInventoryObjectContextMenu(0, refillMenu, { meltBucket })
+local refillOption = refillMenu:find("ContextMenu_TienCoolers_CancelFreeze")
+passed = reportStr("  the freezing tooltip says where it stands",
+    refillOption and refillOption.toolTip and refillOption.toolTip.description, "Tooltip_TienCoolers_FreezingRate") and passed
+CF.processTopLevel(refreezer)
+clock.hours = 2060
+CF.processTopLevel(refreezer)
+passed = report("  water set to freeze beside them refreezes them",
+    CF.getCharge(meltIce) + CF.getCharge(lostIce), 1.5, 1e-9) and passed
+passed = report("  out of the bucket", meltBucket.fluid:getAmount(), 0.0, 1e-9) and passed
+passed = reportStr("  and no new bag is made of it", bagsIn(refreezer), 2) and passed
+
+-- A clean bag will not take tainted water, which would make it tainted ice. A tainted bag
+-- takes tainted water first.
+local mixFreezer = newContainer("freezer", true)
+local cleanHalf = mixFreezer:AddItem(CF.ICE_BAG)
+cleanHalf.delta = 0.5
+local dirtyHalf = mixFreezer:AddItem(CF.ICE_BAG_TAINTED)
+dirtyHalf.delta = 0.5
+local dirtyWater = newFluidHolder("Base.BucketWood", 10, { TaintedWater = 1.0 })
+local cleanWater = newFluidHolder("Base.BucketWood", 10, { Water = 2.0 })
+mixFreezer:add(dirtyWater)
+mixFreezer:add(cleanWater)
+CF.startFreezingWater(dirtyWater)
+CF.startFreezingWater(cleanWater)
+CF.processTopLevel(mixFreezer)
+clock.hours = 2100
+CF.processTopLevel(mixFreezer)
+passed = report("a tainted bag takes the tainted water", amountOf(dirtyWater, "TaintedWater"), 0.0, 1e-9) and passed
+passed = report("  and the clean bag the clean water", amountOf(cleanWater, "Water"), 0.0, 1e-9) and passed
+passed = report("  the clean bag taking clean water only", CF.getCharge(cleanHalf), 0.5 + 2.0 / 5.0, 1e-9) and passed
+passed = report("  and the tainted bag tainted water only", CF.getCharge(dirtyHalf), 0.5 + 1.0 / 5.0, 1e-9) and passed
+
+-- A melted clean bag set in with tainted water alone is topped up with it, and turns into
+-- a tainted bag, keeping what it was frozen in.
+local turnStart = clock.hours
+local turnFreezer = newContainer("freezer", true)
+local turnIce = turnFreezer:AddItem(CF.ICE_BAG)
+turnIce.delta = 0.5
+turnIce.md.tcWrap = "Base.Garbagebag"
+local turnWater = turnFreezer:add(newFluidHolder("Base.BucketWood", 10, { TaintedWater = 1.0 }))
+CF.startFreezingWater(turnWater)
+CF.processTopLevel(turnFreezer)
+clock.hours = clock.hours + 7
+CF.processTopLevel(turnFreezer)
+passed = reportStr("a clean bag topped up with tainted water turns tainted",
+    countType(turnFreezer, CF.ICE_BAG_TAINTED) == 1 and bagsIn(turnFreezer) == 0, true) and passed
+local turned = nil
+for _, it in ipairs(turnFreezer.list) do if it:getFullType() == CF.ICE_BAG_TAINTED then turned = it end end
+passed = report("  holding what it had and what it took", turned and CF.getCharge(turned) or 0, 0.7, 1e-9) and passed
+passed = reportStr("  and still owing its garbage bag", turned and turned.md.tcWrap, "Base.Garbagebag") and passed
+
+-- Clean water freezing beside it keeps a clean bag for itself.
+local keepFreezer = newContainer("freezer", true)
+local keepIce = keepFreezer:AddItem(CF.ICE_BAG)
+keepIce.delta = 0.5
+local keepDirty = keepFreezer:add(newFluidHolder("Base.BucketWood", 10, { TaintedWater = 1.0 }))
+local keepClean = keepFreezer:add(newFluidHolder("Base.BucketWood", 10, { Water = 1.0 }))
+CF.startFreezingWater(keepDirty)
+CF.startFreezingWater(keepClean)
+CF.processTopLevel(keepFreezer)
+clock.hours = clock.hours + 7
+CF.processTopLevel(keepFreezer)
+passed = report("with clean water freezing too, the clean bag takes only that", CF.getCharge(keepIce), 0.7, 1e-9) and passed
+passed = reportStr("  and stays clean", keepIce.container == keepFreezer, true) and passed
+clock.hours = turnStart
+
+-- Ice in a cooler set in a freezer draws on the water set to freeze in that freezer.
+local coolFreezer = newContainer("freezer", true)
+local frozenCooler = coolFreezer:add(newBag("Base.Cooler"))
+local coolerIce = frozenCooler.inventory:AddItem(CF.ICE_BAG)
+coolerIce.delta = 0.5
+local coolWater = coolFreezer:add(newFluidHolder("Base.BucketWood", 10, { Water = 10.0 }))
+CF.startFreezingWater(coolWater)
+passed = report("water for the ice in a cooler is set aside for it", select(5, CF.freezeProgress(coolFreezer)),
+    7.5, 1e-9) and passed
+CF.processTopLevel(coolFreezer)
+clock.hours = 2102
+CF.processTopLevel(coolFreezer)
+passed = report("ice in a cooler in a freezer tops up from its water", CF.getCharge(coolerIce), 1.0, 1e-9) and passed
+passed = report("  and pays for it, the rest waiting for a plastic bag", coolWater.fluid:getAmount(),
+    7.5, 1e-9) and passed
+passed = reportStr("  since a bag being topped up needs none", bagsIn(coolFreezer), 0) and passed
+
+-- A client does not refreeze a freezer's ice itself: the water is the server's to draw,
+-- and without the water the new charge would be free again. It waits for the server's.
+net.client = true
+local clientFreezer = newContainer("freezer", true)
+local clientIce = clientFreezer:AddItem(CF.ICE_BAG)
+clientIce.delta = 0.5
+local clientWater = clientFreezer:add(newFluidHolder("Base.BucketWood", 10, { Water = 10.0 }))
+clientWater.md.tcFreezing = true
+clientWater.md.tcFreezeStart = clock.hours
+CF.processTopLevel(clientFreezer)
+clock.hours = 2104
+CF.processTopLevel(clientFreezer)
+passed = report("a client leaves a freezer's ice for the server", CF.getCharge(clientIce), 0.5, 1e-9) and passed
+passed = report("  and its water", clientWater.fluid:getAmount(), 10.0, 1e-9) and passed
+net.client = false
 
 -- Tainted ice melts into tainted water.
 clock.hours = 3000
@@ -2130,14 +2436,11 @@ local _, cupIce, cupTop = icedCooler(CF.ICE_BAG, cup)
 clock.hours = 4024
 CF.processTopLevel(cupTop)
 passed = report("a full bottle takes what fits", cup.fluid:getAmount(), 1.0) and passed
-passed = report("  and only that has left the bag", cupIce.md.tcDrained, 0.2) and passed
 clock.hours = 4048
 CF.processTopLevel(cupTop)
 passed = report("  the rest that melts is lost", cup.fluid:getAmount(), 1.0) and passed
-passed = report("  and the bag can still refreeze all but what ran out", CF.iceCapacity(cupIce), 0.8) and passed
 
--- Water that melted before a bucket was set is gone. Only what melts afterwards is caught,
--- and the bag still refreezes the lost part, since none of it ran out.
+-- Water that melted before a bucket was set is gone. Only what melts afterwards is caught.
 clock.hours = 4200
 local lateBucket = newFluidHolder("Base.BucketWood", 10, {})
 local lateCooler, lateIce, lateTop = icedCooler(CF.ICE_BAG)
@@ -2151,29 +2454,21 @@ passed = report("a bucket set late gets none of the water that melted before",
 clock.hours = 4236
 CF.processTopLevel(lateTop)
 passed = report("  only what melts after it was set", lateBucket.fluid:getAmount(), 1.25) and passed
-passed = report("  and the bag can refreeze everything but that", CF.iceCapacity(lateIce), 0.75) and passed
 
--- With meltwater switched off, a marked bucket catches nothing and the menu offers nothing.
-SandboxVars.TienCoolers.CatchMeltwater = false
+-- With Reworked Ice switched off, a marked bucket catches nothing and the menu offers
+-- nothing.
+SandboxVars.TienCoolers.ReworkedIce = false
 clock.hours = 4500
 local offBucket = newFluidHolder("Base.BucketWood", 10, {})
 local _, offIce, offTop = icedCooler(CF.ICE_BAG, offBucket)
 clock.hours = 4524
 CF.processTopLevel(offTop)
 passed = report("meltwater off: a marked bucket stays empty", offBucket.fluid:getAmount(), 0.0) and passed
-passed = reportStr("  and the bag drains nothing", offIce.md.tcDrained, nil) and passed
 local offMenu = newMenu()
 handlers.OnFillInventoryObjectContextMenu(0, offMenu, { offBucket })
 passed = reportStr("  and Catch Meltwater is not offered",
     offMenu:find("ContextMenu_TienCoolers_Catch") ~= nil, false) and passed
-SandboxVars.TienCoolers.CatchMeltwater = true
-
--- Nothing catching, nothing drained: the bag behaves exactly as it always did.
-clock.hours = 5000
-local _, plainIce, plainTop = icedCooler(CF.ICE_BAG)
-clock.hours = 5024
-CF.processTopLevel(plainTop)
-passed = reportStr("with nothing catching, nothing drains", plainIce.md.tcDrained, nil) and passed
+SandboxVars.TienCoolers.ReworkedIce = true
 
 -- A spent bag pours the last of its water, then gives back what it was frozen in.
 clock.hours = 6000
@@ -2194,13 +2489,13 @@ CF.processTopLevel(lootTop)
 passed = reportStr("a bag with no record of one leaves a plastic bag",
     countType(lootCooler.inventory, CF.PLASTIC_BAG), 1) and passed
 
-SandboxVars.TienCoolers.NeedPlasticBags = false
+SandboxVars.TienCoolers.ReworkedIce = false
 clock.hours = 8000
 local freeCooler, _, freeTop = icedCooler(CF.ICE_BAG)
 clock.hours = 8060
 CF.processTopLevel(freeTop)
-passed = reportStr("  unless bags are switched off", #freeCooler.inventory.list, 0) and passed
-SandboxVars.TienCoolers.NeedPlasticBags = true
+passed = reportStr("  unless Reworked Ice is switched off", #freeCooler.inventory.list, 0) and passed
+SandboxVars.TienCoolers.ReworkedIce = true
 
 -- A cold pack is gel, not water, and leaves nothing behind.
 clock.hours = 8500
@@ -2209,7 +2504,6 @@ local _, packItem, packTop = icedCooler("Base.Coldpack", packBucket)
 clock.hours = 8524
 CF.processTopLevel(packTop)
 passed = report("a melting cold pack pours nothing", packBucket.fluid:getAmount(), 0.0) and passed
-passed = reportStr("  and drains nothing", packItem.md.tcDrained, nil) and passed
 
 -- The mark only means something in a cooler. Taken out, the bottle stops catching.
 local outside = newContainer("bag")
@@ -2314,9 +2608,7 @@ passed = reportStr("  and nobody can mark another player's bucket", CF.isCatchin
 net.client, net.server = false, false
 net.players[3] = nil
 net.online = {}
-SandboxVars.TienCoolers.TaintedIce = nil
-SandboxVars.TienCoolers.NeedPlasticBags = nil
-SandboxVars.TienCoolers.CatchMeltwater = nil
+SandboxVars.TienCoolers.ReworkedIce = nil
 
 end
 checkIceAndMeltwater()

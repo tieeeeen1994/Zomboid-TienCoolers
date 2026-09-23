@@ -1,19 +1,24 @@
 # Tien's Coolers
 
-## New in 1.5.*: beta features, off by default
+## New in 1.5.*: Reworked Ice, a beta option, off by default
 
-Version 1.5 adds three new features as a beta. All of them are **off by default**, so the
-mod plays exactly as it did before until they are switched on in the sandbox settings,
-where each one is marked [BETA].
+Version 1.5 adds a beta sandbox option, **Reworked Ice**, which makes ice behave like the
+water it is made of. It is **off by default**, so the mod plays exactly as it did before
+until it is switched on in the sandbox settings, where it is marked [BETA]. With it on:
 
-- **Tainted Ice:** tainted water freezes into a Bag of Ice (Tainted), which cools food just
-  as well but melts into tainted water.
-- **Freezing Needs Plastic Bags:** each bag of ice made in a freezer needs an empty plastic
-  bag or garbage bag, which is given back when the ice is used up.
-- **Catch Meltwater:** right-click a bottle, pot or other water container inside a cooler
+- **Tainted ice:** tainted water freezes into a Bag of Ice (Tainted), which cools food just
+  as well but melts into tainted water. A clean bag topped up with tainted water becomes
+  tainted.
+- **Plastic bags:** each new bag of ice made in a freezer needs an empty plastic bag or
+  garbage bag, which is given back when the ice is used up.
+- **Catch meltwater:** right-click a bottle, pot or other water container inside a cooler
   and choose *Catch Meltwater*, and the water from the melting ice runs into it until it is
-  full. Water that melts while nothing is set to catch it is lost, and water that has run
-  out of a bag cannot be frozen back into it.
+  full. Water that melts while nothing is set to catch it is lost.
+- **Freezing takes water:** water set to freeze turns to ice a little at a time over the
+  freezing time, filling one bag of ice before starting the next, and water short of a full
+  bag makes a partly filled one. A melted bag fills up again only from water set to freeze
+  beside it.
+- **Weight:** a bag of ice weighs as much as the water in it and gets lighter as it melts.
 
 Please report any bugs if you found one. Thank you!
 
@@ -35,8 +40,8 @@ set to freeze in the same container adds up, and a bag is ready after seven hour
 
 The vanilla Cold Pack also chills a cooler, at a lower strength than ice.
 
-Thirteen sandbox settings cover cooling strength, ice lifetime, melting, freezing, cold
-packs, freezer loot, the blue tint, the *(Iced)* label and the three beta features. Cooling
+Eleven sandbox settings cover cooling strength, ice lifetime, melting, freezing, cold
+packs, freezer loot, the blue tint, the *(Iced)* label and the Reworked Ice beta. Cooling
 follows the vanilla Food Rot Speed and Refrigeration Effectiveness settings and never
 exceeds a powered refrigerator.
 

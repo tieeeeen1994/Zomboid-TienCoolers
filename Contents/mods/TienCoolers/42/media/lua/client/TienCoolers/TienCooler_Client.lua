@@ -449,7 +449,7 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
     if #freezable > 0 then
         local option = context:addOption(getText("ContextMenu_TienCoolers_Freeze"), player,
             onStartFreezing, freezable)
-        local key = CF.opt("NeedPlasticBags", false) and "Tooltip_TienCoolers_FreezeInBags"
+        local key = CF.reworkedIce() and "Tooltip_TienCoolers_FreezeInBags"
             or "Tooltip_TienCoolers_Freeze"
         tooltipFor(option, getText(key,
             round(CF.opt("FreezeHours", 7.0), 1), round(CF.opt("WaterPerBag", 5.0), 2)))
@@ -459,18 +459,22 @@ local function onFillInventoryContextMenu(playerNum, context, selected)
         local option = context:addOption(getText("ContextMenu_TienCoolers_CancelFreeze"), player,
             onStopFreezing, cancellable)
 
-        -- Water set to freeze does nothing visible until a bag turns up hours later, so
-        -- say where it has got to. Short of a bagful is the case worth naming: the water
-        -- sits there indefinitely and the freezer looks no different from a broken one.
-        -- So is having the water and nothing to freeze it in.
+        -- Water set to freeze can look like nothing is happening, so say where it has got
+        -- to, and name what can hold it up: short of a bagful, which without Reworked Ice
+        -- sits there indefinitely, or water for a new bag and nothing to freeze it in.
         local container = cancellable[1]:getContainer()
         if container then
-            local pooled, perBag, remaining, bags = CF.freezeProgress(container)
-            if pooled < perBag then
+            local pooled, perBag, remaining, bags, spare = CF.freezeProgress(container)
+            if CF.reworkedIce() then
+                if bags == 0 and spare > 0.0001 then
+                    tooltipFor(option, getText("Tooltip_TienCoolers_NoBags"))
+                else
+                    tooltipFor(option, getText("Tooltip_TienCoolers_FreezingRate",
+                        round(pooled, 2), round(perBag, 2), round(remaining, 1)))
+                end
+            elseif pooled < perBag then
                 tooltipFor(option, getText("Tooltip_TienCoolers_FreezingShort",
                     round(pooled, 2), round(perBag, 2)))
-            elseif bags == 0 then
-                tooltipFor(option, getText("Tooltip_TienCoolers_NoBags"))
             else
                 tooltipFor(option, getText("Tooltip_TienCoolers_Freezing",
                     round(pooled, 2), round(perBag, 2), round(remaining, 1)))
