@@ -1,0 +1,42 @@
+{
+    "Sandbox_TienCoolers": "Frigoriferi portatili di Tien [Tien's Coolers]",
+
+    "Sandbox_TienCoolers_CoolStrength": "Potenza di raffreddamento",
+    "Sandbox_TienCoolers_CoolStrength_tooltip": "Indica la capacità di raffreddamento di un frigorifero portatile con ghiaccio rispetto a un frigorifero funzionante. 1 lo rende equivalente a un frigorifero, 0.5 gli conferisce metà della sua efficacia e 0 significa che il ghiaccio non produce alcun effetto. Il valore viene calcolato in base a ciò che l'impostazione Efficacia della refrigerazione assegna a un vero frigorifero, quindi i due valori variano insieme; con il valore predefinito di 0.5 e la refrigerazione Normale, il cibo in un frigorifero portatile marcisce a 0.6 volte la sua velocità abituale. Un frigorifero portatile non può mai essere più efficace di un frigorifero, motivo per cui la scala si ferma a 1.",
+
+    "Sandbox_TienCoolers_IceLifeHours": "Durata del ghiaccio (ore)",
+    "Sandbox_TienCoolers_IceLifeHours_tooltip": "Ore di gioco per cui un sacco pieno di ghiaccio dura all'interno di un frigorifero portatile a 20 C. Con il caldo si scioglie più velocemente, mentre con il freddo più lentamente.",
+
+    "Sandbox_TienCoolers_IceLifeOutsideMult": "Durata del ghiaccio fuori dal frigorifero portatile",
+    "Sandbox_TienCoolers_IceLifeOutsideMult_tooltip": "Moltiplicatore applicato alla durata del ghiaccio quando non si trova in un frigorifero portatile. 0.2 significa che in uno zaino si scioglie cinque volte più velocemente.",
+
+    "Sandbox_TienCoolers_FreezeHours": "Tempo di congelamento (ore)",
+    "Sandbox_TienCoolers_FreezeHours_tooltip": "Ore di gioco necessarie a un congelatore alimentato per trasformare l'acqua in ghiaccio e per riempire nuovamente un sacco di ghiaccio sciolto.",
+
+    "Sandbox_TienCoolers_WaterPerBag": "Acqua per sacco di ghiaccio",
+    "Sandbox_TienCoolers_WaterPerBag_tooltip": "Unità d'acqua consumate per ogni sacco di ghiaccio prodotto. L'acqua viene sommata tra tutti i contenitori impostati per il congelamento nello stesso frigorifero, quindi diversi contenitori piccoli possono fornire insieme abbastanza acqua per un sacco. Come riferimento, una bottiglia contiene 1 unità e un secchio 10.",
+
+    "Sandbox_TienCoolers_TaintedIce": "[BETA] Ghiaccio contaminato",
+    "Sandbox_TienCoolers_TaintedIce_tooltip": "Funzione beta, disattivata per impostazione predefinita. L'acqua contaminata si congela formando un Sacco di ghiaccio (Contaminato), che raffredda il cibo tanto quanto il ghiaccio pulito ma, sciogliendosi, produce acqua contaminata. Se disattivata, l'acqua contaminata si congela formando un normale Sacco di ghiaccio.",
+
+    "Sandbox_TienCoolers_NeedPlasticBags": "[BETA] Il congelamento richiede sacchetti di plastica",
+    "Sandbox_TienCoolers_NeedPlasticBags_tooltip": "Funzione beta, disattivata per impostazione predefinita. Ogni sacco di ghiaccio congelato dall'acqua consuma un sacchetto di plastica vuoto o un sacco della spazzatura presente nello stesso congelatore, mentre un sacco di ghiaccio esaurito ne restituisce uno. Se disattivata, i sacchi di ghiaccio vengono prodotti utilizzando soltanto acqua.",
+
+    "Sandbox_TienCoolers_CatchMeltwater": "[BETA] Raccogli acqua del ghiaccio sciolto",
+    "Sandbox_TienCoolers_CatchMeltwater_tooltip": "Funzione beta, disattivata per impostazione predefinita. Permette di impostare una bottiglia, una pentola o un altro contenitore per l'acqua all'interno di un frigorifero portatile affinché raccolga l'acqua prodotta dal ghiaccio che si scioglie accanto ad esso. Viene raccolta soltanto l'acqua che si scioglie dopo aver impostato il contenitore, mentre quella che non può essere raccolta viene persa. Il ghiaccio pulito produce acqua pulita e quello contaminato produce acqua contaminata. L'acqua fuoriuscita da un sacco non può essere ricongelata al suo interno.",
+
+    "Sandbox_TienCoolers_UseColdpacks": "Le piastre refrigeranti funzionano come ghiaccio",
+    "Sandbox_TienCoolers_UseColdpacks_tooltip": "Permette anche alla Piastra refrigerante del gioco base di raffreddare un frigorifero portatile, con la potenza impostata qui sotto.",
+
+    "Sandbox_TienCoolers_ColdpackPower": "Potenza della piastra refrigerante",
+    "Sandbox_TienCoolers_ColdpackPower_tooltip": "Indica la capacità di raffreddamento di una Piastra refrigerante, dove 1 equivale a un sacco pieno di ghiaccio. 0 le disattiva, come l'opzione precedente.",
+
+    "Sandbox_TienCoolers_SpawnIceInLoot": "Spawn del ghiaccio nei congelatori",
+    "Sandbox_TienCoolers_SpawnIceInLoot_tooltip": "Aggiunge sacchi di ghiaccio al loot dei congelatori. Disattiva questa opzione per rendere il congelamento della propria acqua l'unico modo per ottenerli.",
+
+    "Sandbox_TienCoolers_ShowColdTint": "Tonalità blu sugli oggetti raffreddati",
+    "Sandbox_TienCoolers_ShowColdTint_tooltip": "Raffredda gli oggetti presenti in un frigorifero portatile con ghiaccio, facendo apparire le relative righe in blu nella finestra dell'inventario, come avviene con un frigorifero alimentato. Disattiva questa opzione per non modificare la temperatura degli oggetti.",
+
+    "Sandbox_TienCoolers_RenameCoolers": "Etichetta frigoriferi portatili con ghiaccio",
+    "Sandbox_TienCoolers_RenameCoolers_tooltip": "Aggiunge (Con ghiaccio) al nome di un frigorifero portatile che contiene attualmente del ghiaccio."
+}
