@@ -272,7 +272,7 @@ end
 local function onEveryOneMinute()
     for playerNum = 0, getNumActivePlayers() - 1 do
         local player = getSpecificPlayer(playerNum)
-        if player then
+        if player and CF.placed(player) then
             if playerNum == 0 then checkServerVersion(player) end
             CF.processTopLevel(player:getInventory())
             reportCarried(playerNum, player)
@@ -317,7 +317,7 @@ local function onRefreshContainers(window, state)
     if state ~= "end" then return end
     if not window or not window.backpacks then return end
     local player = getSpecificPlayer(window.player or 0)
-    if player and not player:getSquare() then return end
+    if player and not CF.placed(player) then return end
     for _, containerButton in ipairs(window.backpacks) do
         process(player, containerButton.inventory)
     end

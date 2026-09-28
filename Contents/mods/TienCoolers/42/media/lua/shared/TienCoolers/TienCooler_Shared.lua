@@ -449,8 +449,34 @@ end
 -- player.square, so a player who has not been put down yet takes the send down with a
 -- NullPointerException out of ContainerID.setInventoryContainer. Offline included: the
 -- send is a no-op, but the packet is built first and it is the building that throws.
+--
+-- getSquare() alone does not settle it. It answers with the square the player stands on
+-- (IsoMovingObject.current) and only falls back to player.square, which the game copies
+-- over from current during the player's own update. On a login the player is given a
+-- current square before its first update, so getSquare() already says yes while
+-- player.square is still nil, and the send throws all the same. Lua cannot read the
+-- field, so a local player counts as placed only once it has been updated:
+-- OnPlayerUpdate fires after the copy. A new character is a new object with nothing
+-- copied yet, so it starts over. Players on other machines and on a server are not
+-- updated here and keep the plain check.
+local updated = {}
+
+Events.OnCreatePlayer.Add(function(playerNum)
+    updated[playerNum] = nil
+end)
+
+Events.OnPlayerUpdate.Add(function(player)
+    if player:isLocalPlayer() then updated[player:getPlayerNum()] = true end
+end)
+
 local function placed(player)
-    return player ~= nil and player:getSquare() ~= nil
+    if player == nil or player:getSquare() == nil then return false end
+    if player:isLocalPlayer() then return updated[player:getPlayerNum()] == true end
+    return true
+end
+
+function CF.placed(player)
+    return placed(player)
 end
 
 -- Whether a change made now could be announced, for callers that keep no record of the
