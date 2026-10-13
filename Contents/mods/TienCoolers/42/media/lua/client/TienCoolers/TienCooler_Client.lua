@@ -387,18 +387,12 @@ local function onStopCatching(player, items)
     setCatching(player, items, false)
 end
 
+-- The selection holds items and stack rows; a stack row's items[1] is a copy of
+-- items[2] (ISInventoryPane:refreshContainer adds it as the row's header), and a
+-- row can be selected together with some of its items. Vanilla's own flattening
+-- skips the copy and drops duplicates, so each item is handled once.
 local function collectItems(selected)
-    local out = {}
-    for _, entry in ipairs(selected) do
-        if instanceof(entry, "InventoryItem") then
-            out[#out + 1] = entry
-        elseif entry.items then
-            for _, item in ipairs(entry.items) do
-                out[#out + 1] = item
-            end
-        end
-    end
-    return out
+    return ISInventoryPane.getActualItems(selected)
 end
 
 local function tooltipFor(option, text)
