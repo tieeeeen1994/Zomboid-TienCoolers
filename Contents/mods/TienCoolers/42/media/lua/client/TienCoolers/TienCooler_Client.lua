@@ -313,9 +313,18 @@ end
 -- refreshes the container list. There is nothing to see then and the minute tick picks
 -- the same containers up a moment later, so that one is left alone rather than run
 -- against a half-built player.
+--
+-- The event fires for the player's own inventory window too, and that one is skipped:
+-- nothing in it comes back into view, and the minute tick already walks the whole
+-- inventory, worn bags and the coolers in them included. It also rebuilds far more often
+-- than the loot window - every piece of clothing put on or taken off marks it dirty again
+-- and again - and each rebuild walked every carried cooler several times over (through
+-- the inventory, through the bag holding it, and through the cooler's own button when a
+-- mod such as ExtraSauce gives nested containers one), which froze the game for seconds
+-- with a cooler in a backpack.
 local function onRefreshContainers(window, state)
     if state ~= "end" then return end
-    if not window or not window.backpacks then return end
+    if not window or not window.backpacks or window.onCharacter then return end
     local player = getSpecificPlayer(window.player or 0)
     if player and not CF.placed(player) then return end
     for _, containerButton in ipairs(window.backpacks) do

@@ -129,6 +129,28 @@ Events = setmetatable({}, { __index = function(t, name)
     return slot
 end })
 ISInventoryPaneContextMenu = { addToolTip = function() return {} end }
+-- Vanilla's flattening of a selection (ISInventoryPane.lua), as the context menu uses it.
+ISInventoryPane = {}
+function ISInventoryPane.getActualItems(items)
+    local ret, contains = {}, {}
+    for _, item in ipairs(items) do
+        if instanceof(item, "InventoryItem") then
+            if not contains[item] then
+                ret[#ret + 1] = item
+                contains[item] = true
+            end
+        else
+            for i = 2, #item.items do                             -- items[1] is the row's copy
+                local item2 = item.items[i]
+                if not contains[item2] then
+                    ret[#ret + 1] = item2
+                    contains[item2] = true
+                end
+            end
+        end
+    end
+    return ret
+end
 
 -- On a dedicated server there are no active players in the local sense - the client
 -- half's loop runs zero times - but there is a list of everyone connected.
@@ -239,7 +261,11 @@ function newPlayer(num, isLocal)
     player.square = squareAt(-1, -1, 0)
     function player:getUsername() return "player" .. num end
     function player:getInventory() return self.inventory end
+    function player:getPlayerNum() return num end
     net.players[num] = player
+    -- A local player counts as placed only once it has been updated (CF.placed), and a
+    -- player in the world has been, so a fresh local stub gets its first update here.
+    if isLocal and handlers.OnPlayerUpdate then handlers.OnPlayerUpdate(player) end
     return player
 end
 
@@ -2612,5 +2638,56 @@ SandboxVars.TienCoolers.ReworkedIce = nil
 
 end
 checkIceAndMeltwater()
+
+-- Putting clothing on or taking it off rebuilds the player's own inventory window again
+-- and again, and each rebuild used to walk a carried cooler through every button that
+-- reaches it - the inventory, the bag holding it, and its own button with a nested
+-- containers mod - freezing the game for seconds. The window is left to the minute tick
+-- now, and a cooler already done at this moment is not walked again.
+local function checkRepeatedWalks()
+    local function packedCooler()
+        local pack = newBag("Base.Backpack")
+        local cooler = newBag("Base.Cooler")
+        pack.inventory:add(cooler)
+        cooler.inventory:AddItem("TienCoolers.IceBag")
+        local steak = newItem("Base.Steak", { InventoryItem = true, Food = true })
+        steak.offAgeMax = 1000
+        steak.lastAged = clock.hours
+        cooler.inventory:add(steak)
+        return pack, cooler, steak
+    end
+
+    clock.hours = 500
+    local pack, cooler, steak = packedCooler()
+    local _, controlCooler, controlSteak = packedCooler()
+    me.inventory.list = {}
+    me.inventory:add(pack)
+    CF.processTopLevel(me:getInventory())
+    CF.processItem(controlCooler, false, 0)
+
+    clock.hours = clock.hours + 6
+    local walks = 0
+    local updateAge = steak.updateAge
+    function steak:updateAge()
+        walks = walks + 1
+        return updateAge(self)
+    end
+
+    handlers.OnRefreshInventoryWindowContainers({ player = 0, onCharacter = true, backpacks = {
+        { inventory = me:getInventory() }, { inventory = pack.inventory }, { inventory = cooler.inventory },
+    } }, "end")
+    passed = reportStr("the inventory window's rebuild leaves carried coolers to the minute tick",
+        walks, 0) and passed
+
+    CF.processTopLevel(me:getInventory())
+    CF.processTopLevel(pack.inventory)
+    CF.processTopLevel(cooler.inventory)
+    passed = reportStr("  and a cooler reached three ways at one moment is walked once", walks, 1) and passed
+    CF.processItem(controlCooler, false, 0)
+    passed = report("  and ages exactly like a cooler walked once", steak:getAge(), controlSteak:getAge(),
+        0.000001) and passed
+    me.inventory.list = {}
+end
+checkRepeatedWalks()
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")

@@ -19,7 +19,7 @@ local CF = TienCoolers
 -- at login: a dedicated server only picks up a new Workshop build when it restarts,
 -- and half this mod lives on the server, so a stale one fails in ways that look like
 -- bugs (nothing works on the ground, nothing works in a fridge).
-CF.VERSION = "1.5.1"
+CF.VERSION = "1.5.4"
 
 -- Prints what the mod is doing with containers it does not own, on both machines, at
 -- most a line a minute. Set true when a server needs tracing.
@@ -1579,6 +1579,15 @@ function CF.processCooler(coolerItem, isCold)
     CF.updateCoolerName(coolerItem, totalIce > 0)
 
     local dt = (last ~= nil and now > last) and (now - last) or 0
+
+    -- Already done at this very moment: the same cooler is often reached several times
+    -- in one frame (through the inventory, the bag holding it, its own container button,
+    -- and the same again in a second window). Nothing has elapsed, so there is nothing to
+    -- age, chill or settle, and walking the food again is pure cost - Food.updateAge
+    -- searches the cell's whole list of processed items for every chilled item. Food put
+    -- in at this same moment takes its baseline on the next pass instead.
+    if last ~= nil and dt <= 0 then return end
+
     if dt <= 0 then
         -- First sight of this cooler: take an ageing baseline, but show the chill now.
         for _, item in ipairs(contents) do

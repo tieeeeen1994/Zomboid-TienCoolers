@@ -234,7 +234,19 @@ Three things drive a pass, and the order matters:
 | --- | --- |
 | `EveryOneMinute` -> the player's own inventory | coolers and ice you are carrying |
 | `EveryOneMinute` -> a sweep of the squares around the player | fridges, freezers, crates, car trunks, anything set down on the floor |
-| `OnRefreshInventoryWindowContainers` | whatever the loot window just rebuilt, so opening a container shows it up to date at once |
+| `OnRefreshInventoryWindowContainers` | whatever the loot window just rebuilt, so opening a container shows it up to date at once; the player's own inventory window is skipped (see below) |
+
+The rebuild event fires for the player's own inventory window as well, far more often than
+for the loot window: every piece of clothing put on or taken off marks it dirty again and
+again. Walking it each time reached a carried cooler through every button that leads to it
+(the inventory, the bag holding it, and the cooler's own button when a nested containers
+mod such as ExtraSauce adds one, then the same in the other window), and a cooler in a
+backpack froze the game for seconds on every change of clothes (reported in 1.5.3). Nothing
+in that window comes back into view and the minute tick already walks all of it, so it is
+skipped. `CF.processCooler` also returns straight after its ice and label upkeep when no
+game time has passed since its last pass, so a cooler reached several ways in one frame
+walks its food once: `Food.updateAge` searches the cell's whole list of processed items
+for every chilled item it is called on.
 
 The sweep is deliberately cheap, because `EveryOneMinute` is an *in-game* minute - about
 two and a half real seconds at the default day length, less on a short one. Three things
@@ -708,7 +720,7 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 `scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
 files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
 behaviour along with container ownership, addressing, what goes on the wire and the
-client-to-server round trip, tainted ice, plastic bags and meltwater, 262 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+client-to-server round trip, tainted ice, plastic bags and meltwater, 315 checks in all. Run it from `scripts/` with any Lua 5.4 host,
 or with `lupa` from Python:
 
 ```
