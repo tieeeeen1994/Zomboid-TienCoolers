@@ -523,15 +523,55 @@ function CF.syncFields(item)
     end
 end
 
+-- The car a cooler lies in, when `container` is that cooler's inside: in a trunk, a
+-- glove box or on a seat. nil anywhere else.
+--
+-- The server's sendAddItemToContainer and sendRemoveItemFromContainer choose who to
+-- tell from the container itself (GameServer ~2475, 42.21): the player carrying it,
+-- else the players near its parent object, else near the bag's world item. A cooler in
+-- a car has none of those - its container is only given a parent by being dropped, and
+-- then keeps the spot it was dropped on - so ice cleared away or a plastic bag handed
+-- back in a trunk cooler reached nobody, and the players kept seeing the old contents.
+-- The address in the packet is fine (the car, the part, the cooler's id); only who gets
+-- it was wrong. So the send is made with the car as the container's parent for the
+-- length of the call, which builds and sends the packets there and then.
+-- Zomboid Fixes B42's BagContentsSync does the same for every mod; both together are
+-- harmless, since each puts back the parent it found.
+local function carHolding(container)
+    if not isServer() or container:getCharacter() then return nil end
+    local holder = container:getContainingItem()
+    if not holder or holder:getWorldItem() then return nil end
+    local outer = holder:getContainer()
+    if not outer or outer:getContainingItem() then return nil end
+    local parent = outer:getParent()
+    if parent and instanceof(parent, "BaseVehicle") then return parent end
+    return nil
+end
+
+local function sendFrom(container, send)
+    local car = carHolding(container)
+    if not car then return send() end
+
+    -- Put back even if the send throws: a cooler left parented to the car would be
+    -- announced to that car's players wherever it went next.
+    local parent = container:getParent()
+    container:setParent(car)
+    local ok, err = pcall(send)
+    container:setParent(parent)
+    if not ok then error(err) end
+end
+
 function CF.addItem(container, fullType)
     local item = container:AddItem(fullType)
-    if item then sendAddItemToContainer(container, item) end
+    if item then
+        sendFrom(container, function() sendAddItemToContainer(container, item) end)
+    end
     return item
 end
 
 function CF.removeItem(container, item)
     container:Remove(item)
-    sendRemoveItemFromContainer(container, item)
+    sendFrom(container, function() sendRemoveItemFromContainer(container, item) end)
 end
 
 -- A cooler inside a backpack inside your inventory resolves to your inventory.

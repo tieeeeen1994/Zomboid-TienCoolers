@@ -432,6 +432,17 @@ charge, `syncItemModData` for a Cold Pack's (it has no used-delta of its own),
 `syncItemFields` for the *(Iced)* suffix, and `sendAddItemToContainer` /
 `sendRemoveItemFromContainer` for bags of ice that are created or used up.
 
+Those last two pick who to tell from the container itself: the player carrying it, else
+the players near its parent object, else near the bag's world item. A cooler in a car's
+trunk, glove box or seat has none of the three (a bag's container only gets a parent by
+being dropped, and keeps that spot after it is picked up), so up to 1.5.4 a spent bag
+cleared away or a plastic bag handed back in a trunk cooler reached nobody, and every
+player kept seeing the old contents. The address inside the packet was always right (the
+car, the part, the cooler's id), so `CF.addItem` and `CF.removeItem` make the send with the
+car as the cooler's parent for the length of the call and put back whatever parent it had.
+Zomboid Fixes B42's *Bags In Cars Show What The Server Changed* does the same for every
+mod; with both loaded each one simply puts back the parent it found.
+
 The helpers that take a player do need one check, and it is not about the mode. They
 assemble the packet before deciding whether there is anywhere to send it, and assembling it
 works out where the item lives by reading the square the player is standing on, so a player
@@ -720,7 +731,7 @@ standard Steam location. Without it the poster quietly falls back to the drawn c
 `scripts/sim.lua` stubs out the parts of the PZ API the mod touches, loads all three Lua
 files, and asserts the cooling, melting, refreezing, water-to-ice, chill and labelling
 behaviour along with container ownership, addressing, what goes on the wire and the
-client-to-server round trip, tainted ice, plastic bags and meltwater, 315 checks in all. Run it from `scripts/` with any Lua 5.4 host,
+client-to-server round trip, tainted ice, plastic bags and meltwater, 321 checks in all. Run it from `scripts/` with any Lua 5.4 host,
 or with `lupa` from Python:
 
 ```

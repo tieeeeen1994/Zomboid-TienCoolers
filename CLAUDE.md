@@ -13,6 +13,11 @@ backpack (report against 1.5.3, with ExtraSauce Quality of Life's nested contain
 in game: wearing and removing clothing with a cooler of ice and food in a worn backpack, ExtraSauce on and off; that a
 carried cooler's ice charge, "(Iced)" label and food freshness still update within a game minute; that the minute tick
 itself has no noticeable hitch with a full cooler (one pass was never timed; add a timing log if it does).
+Also in 1.5.4 (2026-10-19): the server's add / remove sends for a cooler in a car (spent ice cleared, plastic bag
+handed back) went to nobody, so `CF.addItem` / `CF.removeItem` route them by the car (see docs, Multiplayer). The
+reported hang (eggs into an iced cooler in a trunk) was Zomboid Fixes B42's fast transfer hitting the same gap; that
+fix (`BagContentsSync`) is in that mod. To verify on the server: a spent bag in a trunk cooler disappears for a
+watching player.
 
 ## Where the time goes (the 1.5.4 fix)
 
@@ -36,7 +41,7 @@ itself has no noticeable hitch with a full cooler (one pass was never timed; add
 
 ## Testing
 
-- `scripts/sim.lua` fakes the PZ API and runs all three Lua files (315 checks). From `scripts/`:
+- `scripts/sim.lua` fakes the PZ API and runs all three Lua files (321 checks). From `scripts/`:
   `PYTHONPATH=<scratch>/lupa py -c "import lupa,io; lupa.LuaRuntime().execute(io.open('sim.lua').read())"`
   (`py -m pip install --target <scratch>/lupa lupa`). It must end with `ALL CHECKS PASSED`.
 - When the mod starts calling a new game API, the sim needs a stub for it, or it stops part way with a nil call (1.5.3

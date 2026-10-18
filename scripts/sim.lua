@@ -92,8 +92,24 @@ function syncItemFields(player, item)
         other.md = net.copy(item.md)
     end
 end
-function sendAddItemToContainer(_, item) net.log("add:%s", item:getFullType()) end
-function sendRemoveItemFromContainer(_, item) net.log("remove:%s", item:getFullType()) end
+-- Who the server's container sends go to is decided from the container at the moment of
+-- the call (GameServer ~2475, 42.21): the player carrying it, else the players near its
+-- parent object, else near the bag's world item, else nobody. Kept in net.lastRoute.
+function net.routeOf(container)
+    if not container then return nil end
+    if container:getCharacter() then return "player" end
+    if container.parent then return container.parent end
+    local holder = container.containingItem
+    return holder and holder.worldItem or nil
+end
+function sendAddItemToContainer(container, item)
+    net.lastRoute = net.routeOf(container)
+    net.log("add:%s", item:getFullType())
+end
+function sendRemoveItemFromContainer(container, item)
+    net.lastRoute = net.routeOf(container)
+    net.log("remove:%s", item:getFullType())
+end
 function sendServerCommand(_, module, command, args)
     net.log("reply:%s", command)
     net.lastReply = { command = command, args = args }
@@ -224,6 +240,18 @@ function Container:getParent() return self.parent end
 function Container:getContainingItem() return self.containingItem end
 function Container:getVehiclePart() return self.vehiclePart end
 function Container:getVehicle() return self.vehicle end
+function Container:setParent(parent) self.parent = parent end
+-- ItemContainer.getCharacter: the parent when it is a character, else whoever carries
+-- the bag this container belongs to.
+function Container:getCharacter()
+    local parent = self.parent
+    if parent and parent.__cls and (parent.__cls.IsoPlayer or parent.__cls.IsoGameCharacter) then
+        return parent
+    end
+    local holder = self.containingItem
+    local around = holder and holder.container
+    return around and around:getCharacter() or nil
+end
 function Container:getItemWithID(id)
     for _, v in ipairs(self.list) do
         if v:getID() == id then return v end
@@ -2689,5 +2717,52 @@ local function checkRepeatedWalks()
     me.inventory.list = {}
 end
 checkRepeatedWalks()
+
+-- A cooler in a car's trunk has no character, no parent object and no world item, so the
+-- server's sendAddItemToContainer / sendRemoveItemFromContainer for its inside reached
+-- nobody, and players kept seeing spent ice and missed handed-back plastic bags. The
+-- send is made with the car as the container's parent, and the parent put back after.
+-- A global, not a local: the main chunk is at its 200 locals.
+function checkTrunkCooler()
+    local car = { __cls = { BaseVehicle = true, IsoObject = true } }
+    local trunk = newContainer("TruckBed")
+    trunk.parent = car
+    local cooler = trunk:add(newBag("Base.Cooler"))
+    local ice = cooler.inventory:AddItem(CF.ICE_BAG)
+
+    net.client, net.server = false, true
+    net.lastRoute = nil
+    CF.removeItem(cooler.inventory, ice)
+    passed = reportStr("the server's removal from a cooler in a trunk goes to the car's players",
+        net.lastRoute == car, true) and passed
+    passed = reportStr("  and the cooler keeps no parent afterwards", cooler.inventory.parent == nil, true) and passed
+
+    -- Dropped once and picked up again: the old world object is still its parent, which
+    -- would send to wherever it lay on the floor.
+    local oldSpot = { __cls = { IsoWorldInventoryObject = true, IsoObject = true } }
+    cooler.inventory.parent = oldSpot
+    net.lastRoute = nil
+    CF.addItem(cooler.inventory, CF.PLASTIC_BAG)
+    passed = reportStr("  as does a bag handed back in it, even with a stale parent",
+        net.lastRoute == car, true) and passed
+    passed = reportStr("  which it gets back", cooler.inventory.parent == oldSpot, true) and passed
+
+    -- Carried: vanilla already sends to the carrier, and nothing is changed.
+    local carried = me.inventory:add(newBag("Base.Cooler"))
+    local carriedIce = carried.inventory:AddItem(CF.ICE_BAG)
+    net.lastRoute = nil
+    CF.removeItem(carried.inventory, carriedIce)
+    passed = reportStr("  a carried cooler's removal still goes to its carrier", net.lastRoute, "player") and passed
+    me.inventory:Remove(carried)
+
+    -- A client never re-routes: its sends go to the server, not to players.
+    net.client, net.server = true, false
+    local clientIce = cooler.inventory:AddItem(CF.ICE_BAG)
+    net.lastRoute = nil
+    CF.removeItem(cooler.inventory, clientIce)
+    passed = reportStr("  and a client's send is left alone", net.lastRoute == oldSpot, true) and passed
+    net.client, net.server = false, false
+end
+checkTrunkCooler()
 
 print(passed and "\nALL CHECKS PASSED" or "\nCHECKS FAILED")
