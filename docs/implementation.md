@@ -440,7 +440,7 @@ cleared away or a plastic bag handed back in a trunk cooler reached nobody, and 
 player kept seeing the old contents. The address inside the packet was always right (the
 car, the part, the cooler's id), so `CF.addItem` and `CF.removeItem` make the send with the
 car as the cooler's parent for the length of the call and put back whatever parent it had.
-Zomboid Fixes B42's *Bags In Cars Show What The Server Changed* does the same for every
+Zomboid Fixes B42's *Bags In Cars And Furniture Show What The Server Changed* does the same for every
 mod; with both loaded each one simply puts back the parent it found.
 
 The helpers that take a player do need one check, and it is not about the mode. They
